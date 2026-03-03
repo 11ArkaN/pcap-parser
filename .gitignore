@@ -5,6 +5,10 @@ node_modules/
 dist/*.js
 dist/*.css
 !dist/index.html
+main.js
+preload.js
+src/**/*.js
+tests/**/*.js
 
 # Logs
 *.log
