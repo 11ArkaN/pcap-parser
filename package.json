@@ -11,7 +11,8 @@
     "copy:styles": "node -e \"require('fs').copyFileSync('src/styles.css', 'dist/styles.css')\"",
     "build": "bun run build:main && bun run build:renderer && bun run copy:styles",
     "test": "bun test",
-    "test:captures": "bun test tests/captures-table-data.test.ts"
+    "test:captures": "bun test tests/captures-table-data.test.ts",
+    "dist": "bun run build && electron-builder --win nsis"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -22,6 +23,28 @@
   },
   "devDependencies": {
     "electron": "^28.0.0",
-    "buffer": "^6.0.3"
+    "buffer": "^6.0.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.pcap.analyzer",
+    "productName": "PCAP Analyzer",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
