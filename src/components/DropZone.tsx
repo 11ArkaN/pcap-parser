@@ -1,9 +1,7 @@
 ﻿import React, { useCallback, useState } from 'react';
 import type { FileInputPayload } from '../types';
 
-interface ElectronDragFile extends File {
-  path?: string;
-}
+type ElectronDragFile = File;
 
 interface DropZoneProps {
   onFileDrop: (fileInput: FileInputPayload) => Promise<void> | void;

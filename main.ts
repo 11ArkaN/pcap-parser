@@ -84,10 +84,11 @@ function makeRequest(options: RequestOptions, maxRetries = 3): Promise<RequestRe
       });
 
       req.on('error', (error) => {
+        const networkError = error as NodeJS.ErrnoException;
         const message = error?.message ?? '';
         const shouldRetry =
           attempt < maxRetries &&
-          (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || message.includes('socket hang up'));
+          (networkError.code === 'ECONNRESET' || networkError.code === 'ETIMEDOUT' || message.includes('socket hang up'));
 
         if (shouldRetry) {
           console.log(`[IPC] Retry ${attempt}/${maxRetries} dla ${options.hostname} po bledzie: ${message}`);
@@ -346,7 +347,8 @@ ipcMain.handle('lookup-ip', async (_event, ip: string): Promise<LookupResponse> 
 ipcMain.handle('start-correlation', async (_event, request: CorrelationRequest) => {
   const started = correlationJobs.startJob(request);
   if (!started.success) {
-    return { success: false, error: started.error };
+    const errorMessage = 'error' in started ? started.error : 'Nie udalo sie uruchomic korelacji.';
+    return { success: false, error: errorMessage };
   }
 
   return { success: true, jobId: started.jobId };

@@ -154,7 +154,8 @@ export async function enrichIpData(ip: string): Promise<IpLookupData> {
 
     const result = await withTimeout(window.electronAPI.lookupIp(key), LOOKUP_TIMEOUT_MS, `Timeout lookup IP (${key})`);
     if (!result.success) {
-      throw new Error(result.error || 'Blad pobierania danych IP');
+      const lookupError = 'error' in result ? result.error : 'Blad pobierania danych IP';
+      throw new Error(lookupError);
     }
 
     const normalizedData: IpLookupData = {

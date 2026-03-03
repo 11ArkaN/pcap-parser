@@ -39,9 +39,7 @@ interface AnalysisSession {
   warning?: string | null;
 }
 
-interface ElectronDragFile extends File {
-  path?: string;
-}
+type ElectronDragFile = File;
 
 function App() {
   useEffect(() => {
@@ -76,7 +74,7 @@ function App() {
 
   useEffect(() => {
     return () => {
-      for (const timer of Object.values(pollTimersRef.current)) {
+      for (const timer of Object.values(pollTimersRef.current) as number[]) {
         window.clearInterval(timer);
       }
       pollTimersRef.current = {};
@@ -112,7 +110,8 @@ function App() {
       if (fileInput.filePath) {
         const parsedByMain = await window.electronAPI.parseFile(fileInput.filePath, MAX_CONNECTIONS_PER_ANALYSIS);
         if (!parsedByMain.success) {
-          throw new Error(parsedByMain.error || 'Nie udalo sie sparsowac pliku');
+          const parseError = 'error' in parsedByMain ? parsedByMain.error : 'Nie udalo sie sparsowac pliku';
+          throw new Error(parseError);
         }
         connections = parsedByMain.data.connections;
         truncated = parsedByMain.data.truncated;
@@ -190,13 +189,14 @@ function App() {
       const statusResult = await window.electronAPI.getCorrelationStatus(jobId);
       if (!statusResult.success) {
         stopCorrelationPolling(analysisId);
+        const statusError = 'error' in statusResult ? statusResult.error : 'Nieznany blad statusu korelacji';
         patchAnalysis(analysisId, (analysis) => ({
           ...analysis,
           correlationJob: analysis.correlationJob
             ? {
               ...analysis.correlationJob,
               state: 'failed',
-              error: statusResult.error
+              error: statusError
             }
             : null
         }));
@@ -210,13 +210,14 @@ function App() {
         stopCorrelationPolling(analysisId);
         const result = await window.electronAPI.getCorrelationResult(jobId);
         if (!result.success) {
+          const resultError = 'error' in result ? result.error : 'Nieznany blad raportu korelacji';
           patchAnalysis(analysisId, (analysis) => ({
             ...analysis,
             correlationJob: analysis.correlationJob
               ? {
                 ...analysis.correlationJob,
                 state: 'failed',
-                error: result.error
+                error: resultError
               }
               : null
           }));
@@ -355,7 +356,8 @@ function App() {
       });
 
       if (!response.success) {
-        throw new Error(response.error);
+        const startError = 'error' in response ? response.error : 'Nie udalo sie uruchomic korelacji';
+        throw new Error(startError);
       }
 
       const startedAt = new Date().toISOString();
@@ -592,8 +594,9 @@ function App() {
       )
     ];
 
-    const uniqueAsns = [...new Set(Object.values(activeAnalysis.ipData).map((d) => d.asn).filter(Boolean))];
-    const countries = [...new Set(Object.values(activeAnalysis.ipData).map((d) => d.country).filter(Boolean))];
+    const ipValues = Object.values(activeAnalysis.ipData) as IpLookupData[];
+    const uniqueAsns = [...new Set(ipValues.map((d) => d.asn).filter(Boolean))];
+    const countries = [...new Set(ipValues.map((d) => d.country).filter(Boolean))];
 
     return {
       totalPackets: activeAnalysis.file.packetCount,

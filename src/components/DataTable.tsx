@@ -92,8 +92,8 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
 
         const publicIpA = isPublicIp(a.dst) ? a.dst : a.src;
         const publicIpB = isPublicIp(b.dst) ? b.dst : b.src;
-        const infoA = ipData[publicIpA] || {};
-        const infoB = ipData[publicIpB] || {};
+        const infoA: Partial<IpLookupData> = ipData[publicIpA] ?? {};
+        const infoB: Partial<IpLookupData> = ipData[publicIpB] ?? {};
 
         switch (sortConfig.key) {
           case 'ip':
@@ -151,7 +151,7 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
     const scrollToTarget = () => {
       const rows = tableWrapperRef.current?.querySelectorAll<HTMLTableRowElement>('tr[data-public-ip]');
       if (!rows?.length) return;
-      for (const row of Array.from(rows)) {
+      for (const row of rows) {
         if (row.dataset.publicIp === targetIp) {
           row.scrollIntoView({ behavior: 'smooth', block: 'center' });
           break;
@@ -267,7 +267,7 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
           <tbody>
             {filteredData.map((row, index) => {
               const publicIp = isPublicIp(row.dst) ? row.dst : row.src;
-              const info = ipData[publicIp] || {};
+              const info: Partial<IpLookupData> = ipData[publicIp] ?? {};
 
               return (
                 <tr key={index} data-public-ip={publicIp} className={highlightIp === publicIp ? 'pcap-focus-row' : undefined}>
@@ -467,7 +467,7 @@ export function prepareExportData(
 ): ExportRow[] {
   return data.map((row) => {
     const publicIp = isPublicIp(row.dst) ? row.dst : row.src;
-    const info = ipData[publicIp] || {};
+    const info: Partial<IpLookupData> = ipData[publicIp] ?? {};
 
     return {
       'Adres IP': publicIp,
@@ -491,12 +491,12 @@ function buildExcelColumnWidths(rows: ExportRow[]) {
   const minWidth = 10;
   if (!rows.length) return [];
 
-  const headers = Object.keys(rows[0]);
+  const headers = Object.keys(rows[0]) as Array<keyof ExportRow>;
   return headers.map((header) => {
     let longest = header.length;
 
     for (const row of rows) {
-      const value = (row as Record<string, unknown>)[header];
+      const value = row[header];
       const width = String(value ?? '').length;
       if (width > longest) longest = width;
     }
