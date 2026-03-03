@@ -26,3 +26,4 @@ release/
 
 # Cache
 .cache/
+sidecar/__pycache__/*

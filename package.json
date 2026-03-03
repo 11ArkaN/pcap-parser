@@ -12,7 +12,8 @@
     "build": "bun run build:main && bun run build:renderer && bun run copy:styles",
     "test": "bun test",
     "test:captures": "bun test tests/captures-table-data.test.ts",
-    "dist": "bun run build && electron-builder --win nsis"
+    "dist": "bun run build && electron-builder --win nsis",
+    "sidecar:install-deps": "python -m pip install -r sidecar/requirements.txt"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -36,6 +37,29 @@
     "files": [
       "dist/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "sidecar",
+        "to": "sidecar",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/procmon",
+        "to": "procmon",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "python",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
       "target": [

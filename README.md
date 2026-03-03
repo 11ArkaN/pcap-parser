@@ -13,6 +13,7 @@ Desktop app for analyzing PCAP/PCAPNG files from Wireshark.
 - Charts and tabular analytics
 - Export to CSV, JSON, Excel
 - Local cache for WHOIS lookups (24h)
+- Correlation of PCAP network sessions with Process Monitor `.pml` logs (PID/process mapping)
 
 ## Requirements
 
@@ -52,6 +53,32 @@ bun test
 # Capture/table regression tests only
 bun run test:captures
 ```
+
+## Process Monitor Correlation
+
+Correlation runs in a Python sidecar process and uses:
+
+1. Procmon XML export (`/OpenLog` + `/SaveAs2`) as canonical source.
+2. Optional `procmon-parser` enrichment when available.
+
+### Dev prerequisites
+
+1. Install Python dependencies:
+
+```bash
+bun run sidecar:install-deps
+```
+
+2. Put Procmon binary in `vendor/procmon/Procmon64.exe` (or set `PCAP_ANALYZER_PROCMON` env var).
+3. Optionally set `PCAP_ANALYZER_PYTHON` to custom Python path.
+
+### Packaging notes
+
+`electron-builder` copies:
+
+- `sidecar/` -> `resources/sidecar`
+- `vendor/procmon/` -> `resources/procmon`
+- `python/` -> `resources/python`
 
 ## Project Structure
 

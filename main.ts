@@ -3,10 +3,12 @@ import fs from 'fs';
 import http from 'http';
 import https from 'https';
 import path from 'path';
+import { CorrelationJobManager } from './src/main/correlationJobManager';
 import { parsePcapDetailed } from './src/utils/pcapParser';
-import type { ParsedConnection } from './src/types';
+import type { CorrelationRequest, ParsedConnection } from './src/types';
 
 let mainWindow: BrowserWindow | null = null;
+const correlationJobs = new CorrelationJobManager();
 
 const DEFAULT_MAX_CONNECTIONS = 400_000;
 type HttpProtocol = 'http:' | 'https:';
@@ -141,6 +143,7 @@ app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    correlationJobs.dispose();
     app.quit();
   }
 });
@@ -151,12 +154,27 @@ app.on('activate', () => {
   }
 });
 
+app.on('before-quit', () => {
+  correlationJobs.dispose();
+});
+
 ipcMain.handle('open-file-dialog', async () => {
   const targetWindow = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined;
   return dialog.showOpenDialog(targetWindow, {
     properties: ['openFile'],
     filters: [
       { name: 'Pliki PCAP', extensions: ['pcap', 'pcapng', 'cap', 'dmp'] },
+      { name: 'Wszystkie pliki', extensions: ['*'] }
+    ]
+  });
+});
+
+ipcMain.handle('open-procmon-dialog', async () => {
+  const targetWindow = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+  return dialog.showOpenDialog(targetWindow, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Pliki Process Monitor', extensions: ['pml'] },
       { name: 'Wszystkie pliki', extensions: ['*'] }
     ]
   });
@@ -323,6 +341,37 @@ ipcMain.handle('lookup-ip', async (_event, ip: string): Promise<LookupResponse> 
   }
 
   return { success: false, error: 'All APIs failed' };
+});
+
+ipcMain.handle('start-correlation', async (_event, request: CorrelationRequest) => {
+  const started = correlationJobs.startJob(request);
+  if (!started.success) {
+    return { success: false, error: started.error };
+  }
+
+  return { success: true, jobId: started.jobId };
+});
+
+ipcMain.handle('get-correlation-status', async (_event, jobId: string) => {
+  const status = correlationJobs.getStatus(jobId);
+  if (!status) {
+    return { success: false, error: 'Nie znaleziono zadania korelacji.' };
+  }
+
+  return { success: true, status };
+});
+
+ipcMain.handle('cancel-correlation', async (_event, jobId: string) => {
+  return correlationJobs.cancelJob(jobId);
+});
+
+ipcMain.handle('get-correlation-result', async (_event, jobId: string) => {
+  const result = correlationJobs.getResult(jobId);
+  if (!result) {
+    return { success: false, error: 'Raport korelacji nie jest jeszcze dostepny.' };
+  }
+
+  return { success: true, data: result };
 });
 
 async function lookupRdapCidr(ip: string): Promise<string | null> {

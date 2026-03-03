@@ -1,15 +1,25 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Charts from './components/Charts';
+import CorrelationPanel from './components/CorrelationPanel';
 import DataTable from './components/DataTable';
 import LoadingOverlay from './components/LoadingOverlay';
 import { parsePcapDetailed } from './utils/pcapParser';
 import { enrichIpData } from './utils/whoisApi';
-import type { FileInputPayload, IpLookupData, LoadingProgress, ParsedConnection } from './types';
+import type {
+  CorrelationJobStatus,
+  CorrelationReportV1,
+  FileInputPayload,
+  IpLookupData,
+  LoadingProgress,
+  ParsedConnection,
+  ProcmonAttachment
+} from './types';
 
 const MAX_CONNECTIONS_PER_ANALYSIS = 400_000;
 
 interface AnalysisFileData {
   name: string;
+  path?: string;
   packetCount: number;
   fileSize?: number;
   truncated?: boolean;
@@ -21,6 +31,10 @@ interface AnalysisSession {
   connections: ParsedConnection[];
   ipData: Record<string, IpLookupData>;
   activeView: 'public' | 'local';
+  activeSection: 'pcap' | 'correlation';
+  procmonFiles: ProcmonAttachment[];
+  correlationJob: CorrelationJobStatus | null;
+  correlation: CorrelationReportV1 | null;
   warning?: string | null;
 }
 
@@ -42,10 +56,84 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [isWindowDragActive, setIsWindowDragActive] = useState(false);
   const dragCounterRef = useRef(0);
+  const pollTimersRef = useRef<Record<string, number>>({});
 
   const activeAnalysis = useMemo(
     () => analyses.find((analysis) => analysis.id === activeAnalysisId) ?? null,
     [analyses, activeAnalysisId]
+  );
+
+  const stopCorrelationPolling = useCallback((analysisId: string) => {
+    const timer = pollTimersRef.current[analysisId];
+    if (timer !== undefined) {
+      window.clearInterval(timer);
+      delete pollTimersRef.current[analysisId];
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(pollTimersRef.current)) {
+        window.clearInterval(timer);
+      }
+      pollTimersRef.current = {};
+    };
+  }, []);
+
+  const patchAnalysis = useCallback((analysisId: string, patcher: (analysis: AnalysisSession) => AnalysisSession) => {
+    setAnalyses((current) => current.map((analysis) => (analysis.id === analysisId ? patcher(analysis) : analysis)));
+  }, []);
+
+  const pollCorrelationStatus = useCallback(
+    async (analysisId: string, jobId: string) => {
+      const statusResult = await window.electronAPI.getCorrelationStatus(jobId);
+      if (!statusResult.success) {
+        stopCorrelationPolling(analysisId);
+        patchAnalysis(analysisId, (analysis) => ({
+          ...analysis,
+          correlationJob: analysis.correlationJob
+            ? {
+                ...analysis.correlationJob,
+                state: 'failed',
+                error: statusResult.error
+              }
+            : null
+        }));
+        return;
+      }
+
+      patchAnalysis(analysisId, (analysis) => ({ ...analysis, correlationJob: statusResult.status }));
+      const nextState = statusResult.status.state;
+
+      if (nextState === 'completed') {
+        stopCorrelationPolling(analysisId);
+        const result = await window.electronAPI.getCorrelationResult(jobId);
+        if (!result.success) {
+          patchAnalysis(analysisId, (analysis) => ({
+            ...analysis,
+            correlationJob: analysis.correlationJob
+              ? {
+                  ...analysis.correlationJob,
+                  state: 'failed',
+                  error: result.error
+                }
+              : null
+          }));
+          return;
+        }
+
+        patchAnalysis(analysisId, (analysis) => ({
+          ...analysis,
+          correlation: result.data
+        }));
+        return;
+      }
+
+      if (nextState === 'failed' || nextState === 'cancelled') {
+        stopCorrelationPolling(analysisId);
+      }
+    },
+    [patchAnalysis, stopCorrelationPolling]
   );
 
   const handleFileDrop = useCallback(
@@ -63,6 +151,7 @@ function App() {
         let truncated = false;
         let fileSize = fileInput.fileSize;
         let fileName = fileInput.fileName;
+        let filePath = fileInput.filePath;
 
         if (fileInput.filePath) {
           const parsedByMain = await window.electronAPI.parseFile(fileInput.filePath, MAX_CONNECTIONS_PER_ANALYSIS);
@@ -73,6 +162,7 @@ function App() {
           truncated = parsedByMain.data.truncated;
           fileSize = parsedByMain.data.fileSize;
           fileName = parsedByMain.data.fileName;
+          filePath = parsedByMain.data.filePath;
         } else if (fileInput.buffer) {
           const parsedLocal = await parsePcapDetailed(fileInput.buffer, { maxConnections: MAX_CONNECTIONS_PER_ANALYSIS });
           connections = parsedLocal.connections;
@@ -119,6 +209,7 @@ function App() {
           id,
           file: {
             name: fileName,
+            path: filePath,
             packetCount: connections.length,
             fileSize,
             truncated
@@ -126,6 +217,10 @@ function App() {
           connections,
           ipData: enriched,
           activeView: 'public',
+          activeSection: 'pcap',
+          procmonFiles: [],
+          correlationJob: null,
+          correlation: null,
           warning
         };
 
@@ -177,6 +272,127 @@ function App() {
       setError(message);
     }
   }, [handleFileDrop]);
+
+  const addProcmonFiles = useCallback(async () => {
+    if (!activeAnalysisId) return;
+    try {
+      const result = await window.electronAPI.openProcmonDialog();
+      if (!result.filePaths?.length) return;
+
+      patchAnalysis(activeAnalysisId, (analysis) => {
+        const existing = new Set(analysis.procmonFiles.map((item) => item.filePath));
+        const nextFiles = result.filePaths
+          .filter((filePath) => !existing.has(filePath))
+          .map((filePath) => ({
+            filePath,
+            fileName: extractFileName(filePath),
+            addedAt: new Date().toISOString()
+          }));
+        return {
+          ...analysis,
+          procmonFiles: [...analysis.procmonFiles, ...nextFiles]
+        };
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [activeAnalysisId, patchAnalysis]);
+
+  const removeProcmonFile = useCallback(
+    (filePath: string) => {
+      if (!activeAnalysisId) return;
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        procmonFiles: analysis.procmonFiles.filter((file) => file.filePath !== filePath)
+      }));
+    },
+    [activeAnalysisId, patchAnalysis]
+  );
+
+  const startCorrelation = useCallback(async () => {
+    if (!activeAnalysis) return;
+    if (!activeAnalysis.file.path) {
+      setError('Korelacja wymaga pliku PCAP dostepnego pod sciezka lokalna.');
+      return;
+    }
+    if (!activeAnalysis.procmonFiles.length) {
+      setError('Dodaj co najmniej jeden plik Process Monitor (.pml).');
+      return;
+    }
+
+    try {
+      setError(null);
+      const response = await window.electronAPI.startCorrelation({
+        analysisId: activeAnalysis.id,
+        pcapFilePath: activeAnalysis.file.path,
+        procmonFilePaths: activeAnalysis.procmonFiles.map((file) => file.filePath),
+        options: {
+          timeWindowMs: 2000,
+          maxCandidatesPerSession: 16,
+          minScore: 35
+        }
+      });
+
+      if (!response.success) {
+        throw new Error(response.error);
+      }
+
+      const startedAt = new Date().toISOString();
+      patchAnalysis(activeAnalysis.id, (analysis) => ({
+        ...analysis,
+        activeSection: 'correlation',
+        correlation: null,
+        correlationJob: {
+          jobId: response.jobId,
+          analysisId: analysis.id,
+          state: 'queued',
+          progress: {
+            stage: 'prepare',
+            current: 0,
+            total: 1,
+            message: 'Kolejkowanie korelacji...'
+          },
+          startedAt,
+          lastEventAt: startedAt,
+          debugEntries: [
+            {
+              ts: startedAt,
+              level: 'info',
+              stage: 'prepare',
+              message: 'Zadanie korelacji utworzone po stronie aplikacji.'
+            }
+          ]
+        }
+      }));
+
+      stopCorrelationPolling(activeAnalysis.id);
+      pollTimersRef.current[activeAnalysis.id] = window.setInterval(() => {
+        void pollCorrelationStatus(activeAnalysis.id, response.jobId);
+      }, 1200);
+      await pollCorrelationStatus(activeAnalysis.id, response.jobId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [activeAnalysis, patchAnalysis, pollCorrelationStatus, stopCorrelationPolling]);
+
+  const cancelCorrelation = useCallback(async () => {
+    if (!activeAnalysis?.correlationJob) return;
+    await window.electronAPI.cancelCorrelation(activeAnalysis.correlationJob.jobId);
+    stopCorrelationPolling(activeAnalysis.id);
+    patchAnalysis(activeAnalysis.id, (analysis) => ({
+      ...analysis,
+      correlationJob: analysis.correlationJob
+        ? {
+            ...analysis.correlationJob,
+            state: 'cancelled',
+            progress: {
+              ...analysis.correlationJob.progress,
+              message: 'Korelacja anulowana przez uzytkownika.'
+            }
+          }
+        : null
+    }));
+  }, [activeAnalysis, patchAnalysis, stopCorrelationPolling]);
 
   useEffect(() => {
     const onDragEnter = (event: DragEvent) => {
@@ -231,6 +447,7 @@ function App() {
 
   const closeAnalysis = useCallback(
     (analysisId: string) => {
+      stopCorrelationPolling(analysisId);
       setAnalyses((current) => {
         const index = current.findIndex((item) => item.id === analysisId);
         if (index === -1) return current;
@@ -245,17 +462,23 @@ function App() {
         return next;
       });
     },
-    [activeAnalysisId]
+    [activeAnalysisId, stopCorrelationPolling]
   );
 
   const setActiveDataView = useCallback(
     (view: 'public' | 'local') => {
       if (!activeAnalysisId) return;
-      setAnalyses((current) =>
-        current.map((analysis) => (analysis.id === activeAnalysisId ? { ...analysis, activeView: view } : analysis))
-      );
+      patchAnalysis(activeAnalysisId, (analysis) => ({ ...analysis, activeView: view }));
     },
-    [activeAnalysisId]
+    [activeAnalysisId, patchAnalysis]
+  );
+
+  const setActiveSection = useCallback(
+    (section: 'pcap' | 'correlation') => {
+      if (!activeAnalysisId) return;
+      patchAnalysis(activeAnalysisId, (analysis) => ({ ...analysis, activeSection: section }));
+    },
+    [activeAnalysisId, patchAnalysis]
   );
 
   const publicConnections = useMemo(() => {
@@ -374,30 +597,62 @@ function App() {
             {activeAnalysis.warning && <div className="analysis-warning">{activeAnalysis.warning}</div>}
             {error && <div className="analysis-warning">Blad: {error}</div>}
 
-            <Charts connections={publicConnections} ipData={activeAnalysis.ipData} />
-
-            <div className="tabs">
+            <div className="analysis-section-tabs">
               <button
-                className={`tab ${activeAnalysis.activeView === 'public' ? 'active' : ''}`}
-                onClick={() => setActiveDataView('public')}
+                className={`analysis-section-tab ${activeAnalysis.activeSection === 'pcap' ? 'active' : ''}`}
+                onClick={() => setActiveSection('pcap')}
               >
-                IP Publiczne
-                <span className="tab-badge">{publicConnections.length}</span>
+                Widok PCAP
               </button>
               <button
-                className={`tab ${activeAnalysis.activeView === 'local' ? 'active' : ''}`}
-                onClick={() => setActiveDataView('local')}
+                className={`analysis-section-tab ${activeAnalysis.activeSection === 'correlation' ? 'active' : ''}`}
+                onClick={() => setActiveSection('correlation')}
               >
-                Siec lokalna
-                <span className="tab-badge">{localConnections.length}</span>
+                Korelacja
+                {activeAnalysis.correlationJob?.state === 'running' && <span className="section-status">TRWA</span>}
+                {activeAnalysis.correlationJob?.state === 'completed' && <span className="section-status done">GOTOWE</span>}
               </button>
             </div>
 
-            <DataTable
-              connections={activeAnalysis.activeView === 'public' ? publicConnections : localConnections}
-              ipData={activeAnalysis.ipData}
-              isPublic={activeAnalysis.activeView === 'public'}
-            />
+            {activeAnalysis.activeSection === 'pcap' ? (
+              <>
+                <Charts connections={publicConnections} ipData={activeAnalysis.ipData} />
+
+                <div className="tabs">
+                  <button
+                    className={`tab ${activeAnalysis.activeView === 'public' ? 'active' : ''}`}
+                    onClick={() => setActiveDataView('public')}
+                  >
+                    IP Publiczne
+                    <span className="tab-badge">{publicConnections.length}</span>
+                  </button>
+                  <button
+                    className={`tab ${activeAnalysis.activeView === 'local' ? 'active' : ''}`}
+                    onClick={() => setActiveDataView('local')}
+                  >
+                    Siec lokalna
+                    <span className="tab-badge">{localConnections.length}</span>
+                  </button>
+                </div>
+
+                <DataTable
+                  connections={activeAnalysis.activeView === 'public' ? publicConnections : localConnections}
+                  ipData={activeAnalysis.ipData}
+                  isPublic={activeAnalysis.activeView === 'public'}
+                />
+              </>
+            ) : (
+              <CorrelationPanel
+                pcapFilePath={activeAnalysis.file.path}
+                procmonFiles={activeAnalysis.procmonFiles}
+                correlationJob={activeAnalysis.correlationJob}
+                correlationResult={activeAnalysis.correlation}
+                onAddProcmonFiles={addProcmonFiles}
+                onRemoveProcmonFile={removeProcmonFile}
+                onRunCorrelation={startCorrelation}
+                onCancelCorrelation={cancelCorrelation}
+              />
+            )}
           </>
         )}
       </main>
