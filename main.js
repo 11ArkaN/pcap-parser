@@ -163,7 +163,7 @@ ipcMain.handle('lookup-ip', async (event, ip) => {
         }
       }
       
-      // Szukamy CIDR i ASN w irr_records
+      // Szukamy ASN w irr_records
       if (json.data?.irr_records) {
         for (const irrSet of json.data.irr_records) {
           for (const record of irrSet) {
@@ -171,17 +171,17 @@ ipcMain.handle('lookup-ip', async (event, ip) => {
               asn = `AS${record.value}`;
             } else if (record.key === 'descr') {
               if (!isp) isp = record.value;
-            } else if (record.key === 'route') {
-              // Lepszy CIDR z IRR
-              cidr = record.value;
             }
           }
         }
       }
-      
-      // Jeśli country to 
-      
       // Jeśli brak kraju, miasta, lub CIDR - pobierz z ip-api.com (lepsza geolokalizacja)
+      // CIDR pobieramy z RDAP, zeby byl zgodny z publicznymi wynikami WHOIS.
+      const rdapCidr = await lookupRdapCidr(ip);
+      if (rdapCidr) {
+        cidr = rdapCidr;
+      }
+
       console.log(`[IPC] Dane przed fallbackiem dla ${ip}: country=${country}, city=${city}, cidr=${cidr}`);
       if (!country || !city || !cidr || country === 'EU') {
         console.log(`[IPC] Brak danych dla ${ip} (country: ${country}, city: ${city}), uzywam fallbacku ip-api.com`);
@@ -233,11 +233,52 @@ ipcMain.handle('lookup-ip', async (event, ip) => {
   const fallback = await lookupIpApi(ip);
   
   if (fallback.success) {
-    return { success: true, data: fallback };
+    const rdapCidr = await lookupRdapCidr(ip);
+    return { success: true, data: { ...fallback, cidr: rdapCidr || null } };
   }
   
   return { success: false, error: 'All APIs failed' };
 });
+
+// RDAP lookup dla CIDR (niezalezny od IRR route)
+async function lookupRdapCidr(ip) {
+  try {
+    const options = {
+      protocol: 'https:',
+      hostname: 'rdap.org',
+      path: `/ip/${encodeURIComponent(ip)}`,
+      method: 'GET',
+      timeout: 12000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'PCAP-Analyzer/1.0'
+      }
+    };
+
+    const { data, statusCode } = await makeRequest(options, 2);
+    if (statusCode < 200 || statusCode >= 300) {
+      return null;
+    }
+
+    const json = JSON.parse(data);
+    const cidrBlocks = Array.isArray(json?.cidr0_cidrs) ? json.cidr0_cidrs : [];
+    const cidrs = cidrBlocks
+      .map((block) => {
+        const prefix = block?.v4prefix || block?.v6prefix;
+        const length = block?.length;
+        if (!prefix || length === undefined || length === null) {
+          return null;
+        }
+        return `${prefix}/${length}`;
+      })
+      .filter(Boolean);
+
+    return cidrs.length ? cidrs.join(', ') : null;
+  } catch (error) {
+    console.warn(`[IPC] RDAP CIDR error dla ${ip}:`, error.message);
+    return null;
+  }
+}
 
 // Funkcja pomocnicza do pobierania danych z ip-api.com jako fallback
 function lookupIpApi(ip) {

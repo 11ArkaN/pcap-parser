@@ -1,7 +1,7 @@
 // WHOIS API client with caching
 // Uses ipwho.is (free, no API key required)
 
-const CACHE_KEY = 'pcap-analyzer-cache';
+const CACHE_KEY = 'pcap-analyzer-cache-v2';
 const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
 class WhoisCache {

@@ -138,6 +138,7 @@ function DataTable({ connections, ipData, isPublic }) {
   const exportToExcel = () => {
     const exportData = prepareExportData(filteredData, ipData, isPublic);
     const ws = XLSX.utils.json_to_sheet(exportData);
+    ws['!cols'] = buildExcelColumnWidths(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Analiza PCAP');
     XLSX.writeFile(wb, 'analiza-pcap.xlsx');
@@ -373,6 +374,26 @@ function prepareExportData(data, ipData, isPublic) {
       'Bajty': row.bytes,
       'IP Źródłowe': row.src,
       'IP Docelowe': row.dst
+    };
+  });
+}
+
+function buildExcelColumnWidths(rows) {
+  const MIN_WIDTH = 10;
+  if (!rows.length) return [];
+
+  const headers = Object.keys(rows[0]);
+  return headers.map((header) => {
+    let longest = String(header).length;
+
+    for (const row of rows) {
+      const value = row[header];
+      const width = String(value ?? '').length;
+      if (width > longest) longest = width;
+    }
+
+    return {
+      wch: Math.max(MIN_WIDTH, longest + 2)
     };
   });
 }
