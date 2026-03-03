@@ -1,7 +1,7 @@
 ﻿import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { aggregateConnections, prepareExportData } from '../src/components/DataTable';
-import { parsePcap } from '../src/utils/pcapParser';
+import { parsePcap, parsePcapDetailed } from '../src/utils/pcapParser';
 import type { IpLookupData } from '../src/types';
 
 async function loadTableRows(filePath: string) {
@@ -103,5 +103,13 @@ describe('Capture regression - table data', () => {
       Miasto: 'Mountain View',
       'Blok CIDR': '35.208.0.0/12, 35.224.0.0/12, 35.240.0.0/13'
     });
+  });
+
+  test('Parser reports truncation when maxConnections is reached', async () => {
+    const input = new Uint8Array(readFileSync('captures/Wifi.pcapng'));
+    const result = await parsePcapDetailed(input, { maxConnections: 500 });
+
+    expect(result.connections.length).toBe(500);
+    expect(result.truncated).toBe(true);
   });
 });

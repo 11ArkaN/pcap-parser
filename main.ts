@@ -3,9 +3,12 @@ import fs from 'fs';
 import http from 'http';
 import https from 'https';
 import path from 'path';
+import { parsePcapDetailed } from './src/utils/pcapParser';
+import type { ParsedConnection } from './src/types';
 
 let mainWindow: BrowserWindow | null = null;
 
+const DEFAULT_MAX_CONNECTIONS = 400_000;
 type HttpProtocol = 'http:' | 'https:';
 
 interface RequestOptions extends https.RequestOptions {
@@ -45,6 +48,22 @@ interface LookupFailure {
 }
 
 type LookupResponse = LookupSuccess | LookupFailure;
+
+type ParseFileResponse =
+  | {
+      success: true;
+      data: {
+        filePath: string;
+        fileName: string;
+        fileSize: number;
+        connections: ParsedConnection[];
+        truncated: boolean;
+      };
+    }
+  | {
+      success: false;
+      error: string;
+    };
 
 function makeRequest(options: RequestOptions, maxRetries = 3): Promise<RequestResult> {
   return new Promise((resolve, reject) => {
@@ -150,6 +169,28 @@ ipcMain.handle('read-file', async (_event, filePath: string) => {
       success: true,
       buffer: Array.from(buffer),
       fileName: path.basename(filePath)
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+});
+
+ipcMain.handle('parse-file', async (_event, filePath: string, maxConnections = DEFAULT_MAX_CONNECTIONS): Promise<ParseFileResponse> => {
+  try {
+    const fileStat = fs.statSync(filePath);
+    const raw = fs.readFileSync(filePath);
+    const { connections, truncated } = await parsePcapDetailed(raw, { maxConnections });
+
+    return {
+      success: true,
+      data: {
+        filePath,
+        fileName: path.basename(filePath),
+        fileSize: fileStat.size,
+        connections,
+        truncated
+      }
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -44,3 +44,19 @@ export interface LoadingProgress {
   total: number;
   text: string;
 }
+
+export interface FileInputPayload {
+  fileName: string;
+  filePath?: string;
+  fileSize?: number;
+  buffer?: Uint8Array;
+}
+
+export interface ParsePcapOptions {
+  maxConnections?: number;
+}
+
+export interface ParsePcapResult {
+  connections: ParsedConnection[];
+  truncated: boolean;
+}

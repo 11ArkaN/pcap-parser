@@ -1,4 +1,4 @@
-﻿import type { IpLookupData } from './types';
+﻿import type { IpLookupData, ParsedConnection } from './types';
 
 type OpenDialogResult = {
   canceled: boolean;
@@ -26,11 +26,28 @@ type LookupIpResult =
       error: string;
     };
 
+type ParseFileResult =
+  | {
+      success: true;
+      data: {
+        filePath: string;
+        fileName: string;
+        fileSize: number;
+        connections: ParsedConnection[];
+        truncated: boolean;
+      };
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
 declare global {
   interface Window {
     electronAPI: {
       openFileDialog: () => Promise<OpenDialogResult>;
       readFile: (filePath: string) => Promise<ReadFileResult>;
+      parseFile: (filePath: string, maxConnections?: number) => Promise<ParseFileResult>;
       lookupIp: (ip: string) => Promise<LookupIpResult>;
     };
   }

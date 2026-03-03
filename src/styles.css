@@ -117,6 +117,14 @@ body::before {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .header h1 {
@@ -761,6 +769,41 @@ body::before {
   font-family: 'Fira Code', monospace;
 }
 
+/* ==================== GLOBAL DROP OVERLAY ==================== */
+.global-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(6, 7, 10, 0.78);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.global-drop-overlay-card {
+  border: 1px dashed var(--amber-300);
+  border-radius: var(--radius-lg);
+  background: rgba(18, 20, 28, 0.95);
+  padding: 1.2rem 1.6rem;
+  min-width: 340px;
+  text-align: center;
+  box-shadow: var(--shadow-glow-amber), var(--shadow-lg);
+}
+
+.global-drop-overlay-card h2 {
+  color: var(--text-bright);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.global-drop-overlay-card p {
+  margin-top: 0.25rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
 /* ==================== PROGRESS BAR ==================== */
 .progress-container {
   width: 340px;
@@ -843,6 +886,128 @@ body::before {
   animation: fadeIn 0.4s ease-out;
 }
 
+/* ==================== ANALYSIS TABS ==================== */
+.analysis-tabs-bar {
+  margin-bottom: 0.75rem;
+}
+
+.analysis-tabs-list {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.analysis-tab-chip {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-raised);
+  border-radius: var(--radius-md);
+  min-width: 0;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.analysis-tab-chip.active {
+  border-color: var(--amber-400);
+  background: rgba(226, 160, 57, 0.08);
+}
+
+.analysis-tab-button {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: 'Sora', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.analysis-tab-chip.active .analysis-tab-button {
+  color: var(--text-bright);
+}
+
+.analysis-tab-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-tab-count {
+  font-family: 'Fira Code', monospace;
+  font-size: 0.6875rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+
+.analysis-tab-chip.active .analysis-tab-count {
+  color: var(--amber-300);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.analysis-tab-close {
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.5rem 0.65rem;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+
+.analysis-tab-close:hover {
+  color: var(--rose-400);
+  background: rgba(244, 63, 94, 0.08);
+}
+
+.drop-zone-compact {
+  margin: 0 0 1rem;
+  max-width: none;
+  padding: 1rem 1.25rem;
+  border-style: solid;
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  text-align: left;
+}
+
+.drop-zone-compact .drop-zone-icon {
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.drop-zone-compact .drop-zone-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.drop-zone-compact h2 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.analysis-warning {
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid rgba(251, 146, 60, 0.35);
+  background: rgba(251, 146, 60, 0.08);
+  border-radius: var(--radius-sm);
+  color: #fbbf24;
+  font-size: 0.8rem;
+}
+
 /* ==================== RESPONSIVE ==================== */
 @media (max-width: 1024px) {
   .charts-grid {
@@ -852,6 +1017,11 @@ body::before {
   .header-content {
     flex-direction: column;
     gap: 0.75rem;
+    align-items: stretch;
+  }
+
+  .header-title-row {
+    justify-content: space-between;
   }
 
   .header {
@@ -877,6 +1047,10 @@ body::before {
     width: 100%;
     overflow-x: auto;
   }
+
+  .analysis-tab-name {
+    max-width: 150px;
+  }
 }
 
 @media (max-width: 768px) {
@@ -887,6 +1061,11 @@ body::before {
   .drop-zone {
     margin: 1.5rem;
     padding: 3rem 1.5rem;
+  }
+
+  .drop-zone-compact {
+    margin: 0 0 1rem;
+    padding: 0.75rem 0.875rem;
   }
 
   .drop-zone-icon {

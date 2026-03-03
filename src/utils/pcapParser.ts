@@ -1,4 +1,4 @@
-﻿import type { ParsedConnection } from '../types';
+﻿import type { ParsePcapOptions, ParsePcapResult, ParsedConnection } from '../types';
 
 const ETHERNET_HEADER_LEN = 14;
 const IP_PROTOCOL = 0x0800;
@@ -9,24 +9,34 @@ const MPLS_PROTOCOL = 0x8847;
 const ARP_PROTOCOL = 0x0806;
 const PPPOE_PROTOCOL = 0x8864;
 
-export async function parsePcap(buffer: Uint8Array | ArrayBuffer): Promise<ParsedConnection[]> {
+export async function parsePcap(buffer: Uint8Array | ArrayBuffer, options: ParsePcapOptions = {}): Promise<ParsedConnection[]> {
+  const result = await parsePcapDetailed(buffer, options);
+  return result.connections;
+}
+
+export async function parsePcapDetailed(
+  buffer: Uint8Array | ArrayBuffer,
+  options: ParsePcapOptions = {}
+): Promise<ParsePcapResult> {
   const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const maxConnections = options.maxConnections ?? Number.POSITIVE_INFINITY;
 
   const magic = readUInt32(data, 0);
   if (magic === 0x0a0d0d0a || magic === 0x0d0a0a0d) {
-    return parsePcapNg(data);
+    return parsePcapNg(data, maxConnections);
   }
   if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1) {
-    return parsePcapLegacy(data);
+    return parsePcapLegacy(data, maxConnections);
   }
 
   throw new Error('Unknown file format');
 }
 
-function parsePcapLegacy(data: Uint8Array): ParsedConnection[] {
+function parsePcapLegacy(data: Uint8Array, maxConnections: number): ParsePcapResult {
   const connections: ParsedConnection[] = [];
   const littleEndian = data[0] === 0xd4;
   let offset = 24;
+  let truncated = false;
 
   while (offset < data.length) {
     if (offset + 16 > data.length) break;
@@ -42,17 +52,22 @@ function parsePcapLegacy(data: Uint8Array): ParsedConnection[] {
     if (conn) {
       conn.length = origLen;
       connections.push(conn);
+      if (connections.length >= maxConnections) {
+        truncated = true;
+        break;
+      }
     }
 
     offset += inclLen;
   }
 
-  return connections;
+  return { connections, truncated };
 }
 
-function parsePcapNg(data: Uint8Array): ParsedConnection[] {
+function parsePcapNg(data: Uint8Array, maxConnections: number): ParsePcapResult {
   const connections: ParsedConnection[] = [];
   let offset = 0;
+  let truncated = false;
 
   const byteOrderMagic = readUInt32(data, 8);
   const littleEndian = byteOrderMagic === 0x1a2b3c4d;
@@ -71,6 +86,10 @@ function parsePcapNg(data: Uint8Array): ParsedConnection[] {
 
       if (conn) {
         connections.push(conn);
+        if (connections.length >= maxConnections) {
+          truncated = true;
+          break;
+        }
       }
     }
 
@@ -78,7 +97,7 @@ function parsePcapNg(data: Uint8Array): ParsedConnection[] {
     while (offset % 4 !== 0) offset += 1;
   }
 
-  return connections;
+  return { connections, truncated };
 }
 
 function parseEnhancedPacketBlock(data: Uint8Array, offset: number, littleEndian: boolean): ParsedConnection | null {

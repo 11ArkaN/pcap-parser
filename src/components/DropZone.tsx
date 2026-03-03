@@ -1,11 +1,17 @@
 ﻿import React, { useCallback, useState } from 'react';
+import type { FileInputPayload } from '../types';
 
-interface DropZoneProps {
-  onFileDrop: (buffer: Uint8Array, fileName: string) => Promise<void> | void;
-  error: string | null;
+interface ElectronDragFile extends File {
+  path?: string;
 }
 
-function DropZone({ onFileDrop, error }: DropZoneProps) {
+interface DropZoneProps {
+  onFileDrop: (fileInput: FileInputPayload) => Promise<void> | void;
+  error: string | null;
+  compact?: boolean;
+}
+
+function DropZone({ onFileDrop, error, compact = false }: DropZoneProps) {
   const [isDragActive, setIsDragActive] = useState(false);
 
   const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -26,12 +32,25 @@ function DropZone({ onFileDrop, error }: DropZoneProps) {
   }, []);
 
   const processFile = useCallback(
-    async (file: File) => {
+    async (file: ElectronDragFile) => {
+      if (file.path) {
+        await onFileDrop({
+          filePath: file.path,
+          fileName: extractFileName(file.path),
+          fileSize: file.size
+        });
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = (event) => {
         const arrayBuffer = event.target?.result;
         if (arrayBuffer instanceof ArrayBuffer) {
-          void onFileDrop(new Uint8Array(arrayBuffer), file.name);
+          void onFileDrop({
+            fileName: file.name,
+            fileSize: file.size,
+            buffer: new Uint8Array(arrayBuffer)
+          });
         }
       };
       reader.readAsArrayBuffer(file);
@@ -47,7 +66,7 @@ function DropZone({ onFileDrop, error }: DropZoneProps) {
 
       const files = e.dataTransfer.files;
       if (files.length > 0) {
-        await processFile(files[0]);
+        await processFile(files[0] as ElectronDragFile);
       }
     },
     [processFile]
@@ -57,10 +76,11 @@ function DropZone({ onFileDrop, error }: DropZoneProps) {
     try {
       const result = await window.electronAPI.openFileDialog();
       if (result.filePaths && result.filePaths.length > 0) {
-        const fileResult = await window.electronAPI.readFile(result.filePaths[0]);
-        if (fileResult.success) {
-          await onFileDrop(new Uint8Array(fileResult.buffer), fileResult.fileName);
-        }
+        const selectedPath = result.filePaths[0];
+        await onFileDrop({
+          filePath: selectedPath,
+          fileName: extractFileName(selectedPath)
+        });
       }
     } catch (err) {
       console.error('Blad otwierania pliku:', err);
@@ -69,7 +89,7 @@ function DropZone({ onFileDrop, error }: DropZoneProps) {
 
   return (
     <div
-      className={`drop-zone ${isDragActive ? 'active' : ''}`}
+      className={`drop-zone ${compact ? 'drop-zone-compact' : ''} ${isDragActive ? 'active' : ''}`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -83,12 +103,18 @@ function DropZone({ onFileDrop, error }: DropZoneProps) {
           <line x1="12" y1="3" x2="12" y2="15" />
         </svg>
       </div>
-      <h2>Upusc plik PCAP lub kliknij aby przegladac</h2>
-      <p>Obsluguje pliki .pcap, .pcapng, .cap z Wiresharka</p>
-      <div className="hint">captures/Wifi.pcapng</div>
+      <h2>{compact ? 'Nowa analiza: upusc lub kliknij' : 'Upusc plik PCAP lub kliknij aby przegladac'}</h2>
+      {!compact && <p>Obsluguje pliki .pcap, .pcapng, .cap z Wiresharka</p>}
+      {!compact && <div className="hint">captures/Wifi.pcapng</div>}
       {error && <p className="error-msg">Blad: {error}</p>}
     </div>
   );
+}
+
+function extractFileName(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  return parts[parts.length - 1] || filePath;
 }
 
 export default DropZone;
