@@ -32,6 +32,7 @@ interface AnalysisSession {
   ipData: Record<string, IpLookupData>;
   activeView: 'public' | 'local';
   activeSection: 'pcap' | 'correlation';
+  pcapFocusRequest: { ip: string; requestId: number } | null;
   procmonFiles: ProcmonAttachment[];
   correlationJob: CorrelationJobStatus | null;
   correlation: CorrelationReportV1 | null;
@@ -47,6 +48,8 @@ function App() {
     if (!window.electronAPI) {
       console.error('electronAPI is not available');
     }
+    localStorage.removeItem('pcap-analyzer-session-v1');
+    localStorage.removeItem('pcap-analyzer-cache-v2');
   }, []);
 
   const [analyses, setAnalyses] = useState<AnalysisSession[]>([]);
@@ -57,6 +60,7 @@ function App() {
   const [isWindowDragActive, setIsWindowDragActive] = useState(false);
   const dragCounterRef = useRef(0);
   const pollTimersRef = useRef<Record<string, number>>({});
+  const correlationLookupInFlightRef = useRef<Record<string, Set<string>>>({});
 
   const activeAnalysis = useMemo(
     () => analyses.find((analysis) => analysis.id === activeAnalysisId) ?? null,
@@ -83,6 +87,104 @@ function App() {
   const patchAnalysis = useCallback((analysisId: string, patcher: (analysis: AnalysisSession) => AnalysisSession) => {
     setAnalyses((current) => current.map((analysis) => (analysis.id === analysisId ? patcher(analysis) : analysis)));
   }, []);
+
+  const buildAnalysisSession = useCallback(
+    async (
+      fileInput: FileInputPayload,
+      options: {
+        forcedId?: string;
+        activeView?: 'public' | 'local';
+        activeSection?: 'pcap' | 'correlation';
+        procmonFiles?: ProcmonAttachment[];
+        progressLabel?: string;
+        lookupDelayMs?: number;
+      } = {}
+    ): Promise<AnalysisSession> => {
+      const inputName = fileInput.fileName || 'Nieznany plik';
+      const progressPrefix = options.progressLabel ? `${options.progressLabel}: ` : '';
+      setLoadingProgress({ current: 0, total: 0, text: `${progressPrefix}Parsowanie pliku ${inputName}...` });
+
+      let connections: ParsedConnection[] = [];
+      let truncated = false;
+      let fileSize = fileInput.fileSize;
+      let fileName = fileInput.fileName;
+      let filePath = fileInput.filePath;
+
+      if (fileInput.filePath) {
+        const parsedByMain = await window.electronAPI.parseFile(fileInput.filePath, MAX_CONNECTIONS_PER_ANALYSIS);
+        if (!parsedByMain.success) {
+          throw new Error(parsedByMain.error || 'Nie udalo sie sparsowac pliku');
+        }
+        connections = parsedByMain.data.connections;
+        truncated = parsedByMain.data.truncated;
+        fileSize = parsedByMain.data.fileSize;
+        fileName = parsedByMain.data.fileName;
+        filePath = parsedByMain.data.filePath;
+      } else if (fileInput.buffer) {
+        const parsedLocal = await parsePcapDetailed(fileInput.buffer, { maxConnections: MAX_CONNECTIONS_PER_ANALYSIS });
+        connections = parsedLocal.connections;
+        truncated = parsedLocal.truncated;
+      } else {
+        throw new Error('Brak danych pliku do analizy');
+      }
+
+      if (connections.length === 0) {
+        throw new Error('Nie znaleziono polaczen IP w pliku');
+      }
+
+      const uniqueIps = [...new Set(connections.flatMap((c) => [c.src, c.dst]))];
+      const publicIps = uniqueIps.filter(isPublicIp);
+
+      setLoadingProgress({
+        current: 0,
+        total: publicIps.length,
+        text: `${progressPrefix}Pobieranie danych WHOIS dla ${publicIps.length} adresow IP...`
+      });
+
+      const enriched: Record<string, IpLookupData> = {};
+      const lookupDelayMs = Math.max(0, options.lookupDelayMs ?? 100);
+      for (let i = 0; i < publicIps.length; i += 1) {
+        const ip = publicIps[i];
+        enriched[ip] = await enrichIpData(ip);
+
+        setLoadingProgress({
+          current: i + 1,
+          total: publicIps.length,
+          text: `${progressPrefix}Pobieranie danych WHOIS dla ${publicIps.length} adresow IP...`
+        });
+
+        if (lookupDelayMs > 0 && i < publicIps.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, lookupDelayMs));
+        }
+      }
+
+      const id = options.forcedId || createAnalysisId();
+      const warning = truncated
+        ? `Analiza obcieta do ${MAX_CONNECTIONS_PER_ANALYSIS.toLocaleString()} pakietow, zeby utrzymac stabilnosc pamieci.`
+        : null;
+
+      return {
+        id,
+        file: {
+          name: fileName,
+          path: filePath,
+          packetCount: connections.length,
+          fileSize,
+          truncated
+        },
+        connections,
+        ipData: enriched,
+        activeView: options.activeView ?? 'public',
+        activeSection: options.activeSection ?? 'pcap',
+        pcapFocusRequest: null,
+        procmonFiles: options.procmonFiles ?? [],
+        correlationJob: null,
+        correlation: null,
+        warning
+      };
+    },
+    []
+  );
 
   const pollCorrelationStatus = useCallback(
     async (analysisId: string, jobId: string) => {
@@ -143,97 +245,17 @@ function App() {
       try {
         setLoading(true);
         setError(null);
-
-        const inputName = fileInput.fileName || 'Nieznany plik';
-        setLoadingProgress({ current: 0, total: 0, text: `Parsowanie pliku ${inputName}...` });
-
-        let connections: ParsedConnection[] = [];
-        let truncated = false;
-        let fileSize = fileInput.fileSize;
-        let fileName = fileInput.fileName;
-        let filePath = fileInput.filePath;
-
-        if (fileInput.filePath) {
-          const parsedByMain = await window.electronAPI.parseFile(fileInput.filePath, MAX_CONNECTIONS_PER_ANALYSIS);
-          if (!parsedByMain.success) {
-            throw new Error(parsedByMain.error || 'Nie udalo sie sparsowac pliku');
-          }
-          connections = parsedByMain.data.connections;
-          truncated = parsedByMain.data.truncated;
-          fileSize = parsedByMain.data.fileSize;
-          fileName = parsedByMain.data.fileName;
-          filePath = parsedByMain.data.filePath;
-        } else if (fileInput.buffer) {
-          const parsedLocal = await parsePcapDetailed(fileInput.buffer, { maxConnections: MAX_CONNECTIONS_PER_ANALYSIS });
-          connections = parsedLocal.connections;
-          truncated = parsedLocal.truncated;
-        } else {
-          throw new Error('Brak danych pliku do analizy');
-        }
-
-        if (connections.length === 0) {
-          throw new Error('Nie znaleziono polaczen IP w pliku');
-        }
-
-        const uniqueIps = [...new Set(connections.flatMap((c) => [c.src, c.dst]))];
-        const publicIps = uniqueIps.filter(isPublicIp);
-
-        setLoadingProgress({
-          current: 0,
-          total: publicIps.length,
-          text: `Pobieranie danych WHOIS dla ${publicIps.length} adresow IP...`
-        });
-
-        const enriched: Record<string, IpLookupData> = {};
-        for (let i = 0; i < publicIps.length; i += 1) {
-          const ip = publicIps[i];
-          enriched[ip] = await enrichIpData(ip);
-
-          setLoadingProgress({
-            current: i + 1,
-            total: publicIps.length,
-            text: `Pobieranie danych WHOIS dla ${publicIps.length} adresow IP...`
-          });
-
-          if (i < publicIps.length - 1) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          }
-        }
-
-        const id = createAnalysisId();
-        const warning = truncated
-          ? `Analiza obcieta do ${MAX_CONNECTIONS_PER_ANALYSIS.toLocaleString()} pakietow, zeby utrzymac stabilnosc pamieci.`
-          : null;
-
-        const nextAnalysis: AnalysisSession = {
-          id,
-          file: {
-            name: fileName,
-            path: filePath,
-            packetCount: connections.length,
-            fileSize,
-            truncated
-          },
-          connections,
-          ipData: enriched,
-          activeView: 'public',
-          activeSection: 'pcap',
-          procmonFiles: [],
-          correlationJob: null,
-          correlation: null,
-          warning
-        };
-
+        const nextAnalysis = await buildAnalysisSession(fileInput);
         setAnalyses((current) => [...current, nextAnalysis]);
-        setActiveAnalysisId(id);
-        setLoading(false);
+        setActiveAnalysisId(nextAnalysis.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
+      } finally {
         setLoading(false);
       }
     },
-    [loading]
+    [buildAnalysisSession, loading]
   );
 
   const processDroppedFile = useCallback(
@@ -448,6 +470,7 @@ function App() {
   const closeAnalysis = useCallback(
     (analysisId: string) => {
       stopCorrelationPolling(analysisId);
+      delete correlationLookupInFlightRef.current[analysisId];
       setAnalyses((current) => {
         const index = current.findIndex((item) => item.id === analysisId);
         if (index === -1) return current;
@@ -479,6 +502,69 @@ function App() {
       patchAnalysis(activeAnalysisId, (analysis) => ({ ...analysis, activeSection: section }));
     },
     [activeAnalysisId, patchAnalysis]
+  );
+
+  const goToPcapIpFromCorrelation = useCallback(
+    (ip: string) => {
+      if (!activeAnalysisId) return;
+      const requestId = Date.now();
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        activeSection: 'pcap',
+        activeView: 'public',
+        pcapFocusRequest: {
+          ip,
+          requestId
+        }
+      }));
+    },
+    [activeAnalysisId, patchAnalysis]
+  );
+
+  const ensureCorrelationIpMetadata = useCallback(
+    async (ips: string[]) => {
+      if (!activeAnalysisId || !ips.length) return;
+      const analysisId = activeAnalysisId;
+      const targetAnalysis = analyses.find((analysis) => analysis.id === analysisId);
+      if (!targetAnalysis) return;
+
+      if (!correlationLookupInFlightRef.current[analysisId]) {
+        correlationLookupInFlightRef.current[analysisId] = new Set<string>();
+      }
+      const inFlight = correlationLookupInFlightRef.current[analysisId];
+
+      const queue = ips
+        .map((value) => value.trim())
+        .filter((value, index, array) => array.indexOf(value) === index)
+        .filter((value) => isPublicIp(value))
+        .filter((value) => !targetAnalysis.ipData[value] && !inFlight.has(value));
+
+      if (!queue.length) return;
+
+      for (const ip of queue) {
+        inFlight.add(ip);
+      }
+
+      try {
+        const resolved: Record<string, IpLookupData> = {};
+        for (const ip of queue) {
+          resolved[ip] = await enrichIpData(ip);
+        }
+
+        patchAnalysis(analysisId, (analysis) => ({
+          ...analysis,
+          ipData: {
+            ...analysis.ipData,
+            ...resolved
+          }
+        }));
+      } finally {
+        for (const ip of queue) {
+          inFlight.delete(ip);
+        }
+      }
+    },
+    [activeAnalysisId, analyses, patchAnalysis]
   );
 
   const publicConnections = useMemo(() => {
@@ -639,6 +725,7 @@ function App() {
                   connections={activeAnalysis.activeView === 'public' ? publicConnections : localConnections}
                   ipData={activeAnalysis.ipData}
                   isPublic={activeAnalysis.activeView === 'public'}
+                  focusRequest={activeAnalysis.pcapFocusRequest}
                 />
               </>
             ) : (
@@ -647,6 +734,9 @@ function App() {
                 procmonFiles={activeAnalysis.procmonFiles}
                 correlationJob={activeAnalysis.correlationJob}
                 correlationResult={activeAnalysis.correlation}
+                ipData={activeAnalysis.ipData}
+                onEnsureIpMetadata={ensureCorrelationIpMetadata}
+                onGoToPcapIp={goToPcapIpFromCorrelation}
                 onAddProcmonFiles={addProcmonFiles}
                 onRemoveProcmonFile={removeProcmonFile}
                 onRunCorrelation={startCorrelation}

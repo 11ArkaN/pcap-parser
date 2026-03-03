@@ -134,8 +134,21 @@ export interface CorrelationMatch extends CorrelatedSession {
   pid: number | null;
   tid: number | null;
   processName: string | null;
+  processPath?: string | null;
+  commandLine?: string | null;
+  userName?: string | null;
+  company?: string | null;
+  parentPid?: number | null;
+  integrityLevel?: string | null;
+  signer?: string | null;
+  imageHash?: string | null;
   operation: string | null;
   result: string | null;
+  eventLocalIp?: string | null;
+  eventLocalPort?: number | null;
+  eventRemoteIp?: string | null;
+  eventRemotePort?: number | null;
+  eventDirection?: string | null;
   score: number;
   confidence: CorrelationConfidence;
   offsetUs: number;
@@ -151,9 +164,20 @@ export interface CorrelationUnmatchedProcmonEvent {
   tsUs: number;
   pid: number | null;
   processName: string | null;
+  processPath?: string | null;
+  commandLine?: string | null;
+  userName?: string | null;
+  company?: string | null;
+  parentPid?: number | null;
+  integrityLevel?: string | null;
+  signer?: string | null;
+  imageHash?: string | null;
   operation: string | null;
+  eventLocalIp?: string | null;
+  eventLocalPort?: number | null;
   remoteIp: string | null;
   remotePort: number | null;
+  eventDirection?: string | null;
   reason: string;
 }
 

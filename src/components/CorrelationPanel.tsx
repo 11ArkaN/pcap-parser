@@ -1,12 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { summarizeCorrelation } from '../utils/correlationSummary';
-import type { CorrelationJobStatus, CorrelationMatch, CorrelationReportV1, ProcmonAttachment } from '../types';
+import type { CorrelationJobStatus, CorrelationMatch, CorrelationReportV1, IpLookupData, ProcmonAttachment } from '../types';
 
 interface CorrelationPanelProps {
   pcapFilePath?: string;
   procmonFiles: ProcmonAttachment[];
   correlationJob: CorrelationJobStatus | null;
   correlationResult: CorrelationReportV1 | null;
+  ipData: Record<string, IpLookupData>;
+  onEnsureIpMetadata?: (ips: string[]) => void;
+  onGoToPcapIp?: (ip: string) => void;
   onAddProcmonFiles: () => void;
   onRemoveProcmonFile: (filePath: string) => void;
   onRunCorrelation: () => void;
@@ -18,30 +21,47 @@ function CorrelationPanel({
   procmonFiles,
   correlationJob,
   correlationResult,
+  ipData,
+  onEnsureIpMetadata,
+  onGoToPcapIp,
   onAddProcmonFiles,
   onRemoveProcmonFile,
   onRunCorrelation,
   onCancelCorrelation
 }: CorrelationPanelProps) {
-  const [activeTab, setActiveTab] = useState<'results' | 'debug'>('debug');
+  const [activeTab, setActiveTab] = useState<'results' | 'debug'>('results');
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const debugListRef = useRef<HTMLDivElement | null>(null);
-  const summary = useMemo(
-    () => (correlationResult ? summarizeCorrelation(correlationResult) : null),
-    [correlationResult]
-  );
 
+  const summary = useMemo(() => (correlationResult ? summarizeCorrelation(correlationResult) : null), [correlationResult]);
   const isRunning = correlationJob?.state === 'queued' || correlationJob?.state === 'running';
   const canRun = Boolean(pcapFilePath && procmonFiles.length > 0 && !isRunning);
+  const debugEntries = correlationJob?.debugEntries ?? [];
+
   const topMatches = useMemo(() => {
     if (!correlationResult) return [];
-    return [...correlationResult.matches].sort((a, b) => b.score - a.score).slice(0, 40);
+    return [...correlationResult.matches].sort((a, b) => b.score - a.score).slice(0, 200);
   }, [correlationResult]);
+
+  const missingIps = useMemo(() => {
+    if (!topMatches.length) return [];
+    const pending = new Set<string>();
+    for (const match of topMatches) {
+      const candidates = listPublicIpCandidates(match);
+      for (const candidate of candidates) {
+        if (!lookupIpInfo(ipData, candidate)) {
+          pending.add(candidate);
+        }
+      }
+    }
+    return Array.from(pending).slice(0, 150);
+  }, [topMatches, ipData]);
+
   const progress = correlationJob ? overallProgressPercent(correlationJob) : 0;
-  const debugEntries = correlationJob?.debugEntries ?? [];
 
   useEffect(() => {
     if (correlationResult) {
-      setActiveTab((current) => (current === 'debug' ? current : 'results'));
+      setActiveTab('results');
     }
   }, [correlationResult]);
 
@@ -50,40 +70,48 @@ function CorrelationPanel({
     debugListRef.current.scrollTop = debugListRef.current.scrollHeight;
   }, [debugEntries, activeTab]);
 
+  useEffect(() => {
+    setExpandedRows({});
+  }, [correlationResult?.generatedAt]);
+
+  useEffect(() => {
+    if (!onEnsureIpMetadata || missingIps.length === 0) return;
+    onEnsureIpMetadata(missingIps);
+  }, [missingIps, onEnsureIpMetadata]);
+
+  const toggleExpanded = (rowKey: string) => {
+    setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }));
+  };
+
   return (
-    <section className="correlation-panel">
+    <section className="correlation-panel fade-in">
       <div className="correlation-panel-header">
         <div>
-          <h3>Korelacja Process Monitor</h3>
+          <h3>Korelacja z Process Monitor</h3>
           <p>
-            Polacz sesje sieciowe z PCAP z procesami/PID na podstawie logow <code>.pml</code>.
+            Przypisz ruch sieciowy do procesow na podstawie logow <code>.pml</code> z Procmon.
           </p>
         </div>
         <div className="correlation-actions">
           <button className="btn btn-secondary" onClick={onAddProcmonFiles}>
-            Dodaj pliki PML
+            + Dodaj pliki PML
           </button>
           <button className="btn btn-primary" onClick={onRunCorrelation} disabled={!canRun}>
             Uruchom korelacje
           </button>
           {isRunning && (
-            <button className="btn btn-secondary" onClick={onCancelCorrelation}>
+            <button className="btn btn-secondary btn-cancel" onClick={onCancelCorrelation}>
               Anuluj
             </button>
           )}
         </div>
       </div>
 
-      {!pcapFilePath && (
-        <div className="analysis-warning">
-          Korelacja wymaga pliku otwartego z dysku. Dla plikow bez sciezki (drag-and-drop z buforem) uruchom analize po
-          wskazaniu pliku przez dialog.
-        </div>
-      )}
+      {!pcapFilePath && <div className="analysis-warning">Korelacja wymaga pliku otwartego z dysku (dialog "Otworz plik").</div>}
 
       <div className="correlation-files">
         {procmonFiles.length === 0 ? (
-          <p className="correlation-muted">Brak zalaczonych plikow Procmon.</p>
+          <p className="correlation-muted">Brak dolaczonych plikow Procmon - dodaj co najmniej jeden plik .pml.</p>
         ) : (
           procmonFiles.map((file) => (
             <div key={file.filePath} className="correlation-file-chip">
@@ -100,24 +128,18 @@ function CorrelationPanel({
         <div className="correlation-job">
           <div className="correlation-job-top">
             <span className={`correlation-state correlation-${correlationJob.state}`}>{statusLabel(correlationJob.state)}</span>
-            <span>{correlationJob.progress.message}</span>
+            <span className="correlation-stage-msg">{userFriendlyMessage(correlationJob)}</span>
             {isRunning && <span className="correlation-live-dot" aria-hidden="true" />}
-            <span className="correlation-last-event">Ostatni event: {formatEventAge(correlationJob.lastEventAt)}</span>
           </div>
-          <div className="progress-bar">
-            <div
-              className="progress-fill"
-              style={{
-                width: `${progress}%`
-              }}
-            />
+          <div className="progress-bar" style={{ marginTop: '0.5rem' }}>
+            <div className="progress-fill" style={{ width: `${progress}%` }} />
           </div>
           {isRunning && (
-            <div className="correlation-running-hint">
-              Trwa analiza. Etap "{stageLabel(correlationJob.progress.stage)}" moze potrwac kilka minut dla duzych plikow.
-            </div>
+            <p className="correlation-running-hint">
+              Etap: {stageLabel(correlationJob.progress.stage)} - moze potrwac kilka minut dla duzych plikow.
+            </p>
           )}
-          {correlationJob.error && <div className="analysis-warning">Blad korelacji: {correlationJob.error}</div>}
+          {correlationJob.error && <div className="analysis-warning">{correlationJob.error}</div>}
         </div>
       )}
 
@@ -127,7 +149,7 @@ function CorrelationPanel({
             Wyniki
           </button>
           <button className={`correlation-subtab ${activeTab === 'debug' ? 'active' : ''}`} onClick={() => setActiveTab('debug')}>
-            Debug na zywo
+            Logi
             {isRunning && <span className="tab-badge">LIVE</span>}
           </button>
         </div>
@@ -138,50 +160,139 @@ function CorrelationPanel({
           {summary && correlationResult ? (
             <div className="correlation-result">
               <div className="correlation-summary-grid">
-                <SummaryBox label="Dopasowane sesje" value={summary.totalMatches.toLocaleString()} />
-                <SummaryBox label="Wysoka pewnosc" value={summary.highConfidence.toLocaleString()} />
-                <SummaryBox label="Srednia pewnosc" value={summary.mediumConfidence.toLocaleString()} />
-                <SummaryBox label="Niska pewnosc" value={summary.lowConfidence.toLocaleString()} />
-                <SummaryBox label="Niedopasowane sesje" value={summary.unmatchedSessions.toLocaleString()} />
-                <SummaryBox label="Niedopasowane eventy" value={summary.unmatchedEvents.toLocaleString()} />
+                <SummaryBox label="Dopasowane sesje" value={summary.totalMatches.toLocaleString()} accent="bright" />
+                <SummaryBox label="Wysoka pewnosc" value={summary.highConfidence.toLocaleString()} accent="emerald" />
+                <SummaryBox label="Srednia pewnosc" value={summary.mediumConfidence.toLocaleString()} accent="amber" />
+                <SummaryBox label="Niska pewnosc" value={summary.lowConfidence.toLocaleString()} accent="orange" />
+                <SummaryBox label="Niedopasowane sesje" value={summary.unmatchedSessions.toLocaleString()} accent="muted" />
+                <SummaryBox label="Niedopasowane eventy" value={summary.unmatchedEvents.toLocaleString()} accent="muted" />
               </div>
 
               <div className="correlation-diagnostics">
                 <span>
-                  Offset czasu: <strong>{formatDurationUs(correlationResult.diagnostics.timeOffsetUs)}</strong>
+                  Przesuniecie czasu: <strong>{formatDurationUs(correlationResult.diagnostics.timeOffsetUs)}</strong>
                 </span>
                 <span>
-                  Tryb parsera: <strong>{parserModeLabel(correlationResult.diagnostics.parserMode)}</strong>
-                </span>
-                <span>
-                  Drift: <strong>{correlationResult.diagnostics.drift.toFixed(4)}</strong>
+                  Tryb: <strong>{parserModeLabel(correlationResult.diagnostics.parserMode)}</strong>
                 </span>
               </div>
 
-              <div className="correlation-table-wrapper">
-                <table className="data-table correlation-table">
-                  <thead>
-                    <tr>
-                      <th>Proces</th>
-                      <th>PID</th>
-                      <th>Polaczenie</th>
-                      <th>Ocena</th>
-                      <th>Pewnosc</th>
-                      <th>Offset</th>
-                      <th>Operacja</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {topMatches.map((match) => (
-                      <MatchRow key={`${match.sessionId}:${match.eventId}`} match={match} />
-                    ))}
-                  </tbody>
-                </table>
+              {/* Results cards */}
+              <div className="corr-cards">
+                {topMatches.map((match) => {
+                  const rowKey = `${match.sessionId}:${match.eventId}`;
+                  const expanded = Boolean(expandedRows[rowKey]);
+                  const { ip: publicIp, info } = resolveDisplayIp(match, ipData);
+
+                  return (
+                    <div key={rowKey} className={`corr-card ${expanded ? 'expanded' : ''}`}>
+                      {/* Row 1: Process + Confidence + Toggle */}
+                      <div className="corr-card-header">
+                        <div className="corr-card-process">
+                          <strong>{match.processName || '—'}</strong>
+                          <span className="corr-card-pid">PID {match.pid ?? '—'}</span>
+                        </div>
+                        <div className="corr-card-header-right">
+                          <span className={`confidence-badge confidence-${match.confidence}`}>
+                            {confidenceLabel(match.confidence)}
+                          </span>
+                          <button className="corr-card-toggle" onClick={() => toggleExpanded(rowKey)}>
+                            {expanded ? '▾' : '▸'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Row 2: Key data fields */}
+                      <div className="corr-card-fields">
+                        <div className="corr-field">
+                          <span className="corr-field-label">IP</span>
+                          {publicIp ? (
+                            <button
+                              className="ip-address ip-address-button"
+                              onClick={() => onGoToPcapIp?.(publicIp)}
+                              title={`Przejdz do ${publicIp} w widoku PCAP`}
+                            >
+                              {publicIp}
+                            </button>
+                          ) : (
+                            <span className="corr-field-empty">—</span>
+                          )}
+                        </div>
+                        <div className="corr-field">
+                          <span className="corr-field-label">ASN</span>
+                          {info?.asn ? <span className="asn-badge">{info.asn}</span> : <span className="corr-field-empty">—</span>}
+                        </div>
+                        <div className="corr-field">
+                          <span className="corr-field-label">ISP</span>
+                          <span className="corr-field-value">{info?.isp || info?.org || '—'}</span>
+                        </div>
+                        <div className="corr-field">
+                          <span className="corr-field-label">Lokalizacja</span>
+                          {info?.country ? (
+                            <div className="country-flag">
+                              <span className="flag">{getFlagEmoji(info.country)}</span>
+                              <span className="country-name">{info.country}{info.city ? `, ${info.city}` : ''}</span>
+                            </div>
+                          ) : <span className="corr-field-empty">—</span>}
+                        </div>
+                        <div className="corr-field">
+                          <span className="corr-field-label">CIDR</span>
+                          <span className="cidr-block">{(info?.cidr as string) || (info?.range as string) || '—'}</span>
+                        </div>
+                      </div>
+
+                      {/* Row 3: Service + Traffic + Time */}
+                      <div className="corr-card-meta">
+                        <span className={`protocol-badge ${match.protocol.toLowerCase()}`}>{match.protocol}</span>
+                        <span className="corr-meta-item">{serviceLabel(match)}</span>
+                        <span className="corr-meta-sep">·</span>
+                        <span className="corr-meta-item corr-meta-mono">{match.packets.toLocaleString()} pkt</span>
+                        <span className="corr-meta-sep">·</span>
+                        <span className="corr-meta-item corr-meta-mono">{formatBytes(match.bytes)}</span>
+                        <span className="corr-meta-sep">·</span>
+                        <span className="corr-meta-item corr-meta-mono">{formatTimestampUs(match.firstSeenUs)}</span>
+                      </div>
+
+                      {/* Expandable detail panel */}
+                      {expanded && (
+                        <div className="corr-card-details">
+                          <DetailItem label="Sciezka procesu" value={match.processPath || '—'} />
+                          <DetailItem label="Linia polecen" value={match.commandLine || '—'} />
+                          <DetailItem label="Uzytkownik" value={match.userName || '—'} />
+                          <DetailItem label="Firma" value={match.company || '—'} />
+                          <DetailItem label="PID rodzica" value={formatOptionalNumber(match.parentPid)} />
+                          <DetailItem label="Integralnosc" value={match.integrityLevel || '—'} />
+                          <DetailItem label="Podpis" value={match.signer || '—'} />
+                          <DetailItem label="Hash" value={match.imageHash || '—'} mono />
+                          <DetailItem label="Operacja" value={match.operation || '—'} />
+                          <DetailItem label="Wynik" value={match.result || '—'} />
+                          <DetailItem
+                            label="Endpoint"
+                            value={`${match.eventLocalIp || '—'}:${match.eventLocalPort ?? '—'} → ${match.eventRemoteIp || '—'}:${match.eventRemotePort ?? '—'}`}
+                            mono
+                          />
+                          <DetailItem label="Kierunek" value={match.eventDirection || '—'} />
+                          <DetailItem label="Czas start" value={formatTimestampUs(match.firstSeenUs)} />
+                          <DetailItem label="Czas koniec" value={formatTimestampUs(match.lastSeenUs)} />
+                          <DetailItem label="Delta czasu" value={formatDurationUs(match.offsetUs)} />
+                          <DetailItem label="Powody" value={formatReasons(match)} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              {topMatches.length === 0 && <p className="correlation-muted">Brak dopasowan high/medium/low dla aktualnych progow.</p>}
+              {topMatches.length === 0 && (
+                <p className="correlation-muted" style={{ marginTop: '0.75rem' }}>
+                  Brak dopasowan spelniajacych kryteria pewnosci.
+                </p>
+              )}
             </div>
           ) : (
-            <p className="correlation-muted">Brak wynikow korelacji. Uruchom zadanie i sprawdz postep w zakladce Debug na zywo.</p>
+            <div className="correlation-empty-results">
+              <p>Brak wynikow korelacji.</p>
+              <p className="correlation-muted">Dodaj pliki PML i uruchom korelacje, aby zobaczyc wyniki.</p>
+            </div>
           )}
         </>
       )}
@@ -189,22 +300,20 @@ function CorrelationPanel({
       {activeTab === 'debug' && (
         <div className="correlation-debug">
           <div className="correlation-debug-head">
-            <span>Log zdarzen korelacji</span>
+            <span>Log zdarzen</span>
             <span>{debugEntries.length.toLocaleString()} wpisow</span>
           </div>
           <div className="correlation-debug-list" ref={debugListRef}>
             {debugEntries.length === 0 ? (
               <div className="correlation-debug-empty">
-                {isRunning
-                  ? 'Oczekiwanie na pierwsze eventy sidecara...'
-                  : 'Brak logow debug dla tego zadania.'}
+                {isRunning ? 'Oczekiwanie na pierwsze zdarzenia...' : 'Brak logow dla tego zadania.'}
               </div>
             ) : (
               debugEntries.map((entry, index) => (
                 <div key={`${entry.ts}-${index}`} className={`correlation-debug-row level-${entry.level}`}>
                   <span className="debug-ts">{formatDebugTs(entry.ts)}</span>
                   <span className={`debug-level level-${entry.level}`}>{debugLevelLabel(entry.level)}</span>
-                  <span className="debug-stage">{entry.stage ? stageLabel(entry.stage) : '-'}</span>
+                  <span className="debug-stage">{entry.stage ? stageLabel(entry.stage) : ''}</span>
                   <span className="debug-msg">{entry.message}</span>
                 </div>
               ))
@@ -216,49 +325,47 @@ function CorrelationPanel({
   );
 }
 
-function SummaryBox({ label, value }: { label: string; value: string }) {
+function SummaryBox({ label, value, accent = 'bright' }: { label: string; value: string; accent?: string }) {
   return (
-    <div className="correlation-summary-box">
+    <div className={`correlation-summary-box accent-${accent}`}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
   );
 }
 
-function MatchRow({ match }: { match: CorrelationMatch }) {
+function DetailItem({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <tr>
-      <td>{match.processName || 'N/D'}</td>
-      <td>{match.pid ?? 'N/D'}</td>
-      <td>
-        <code>
-          {match.srcIp}:{match.srcPort ?? '-'} {'->'} {match.dstIp}:{match.dstPort ?? '-'}
-        </code>
-      </td>
-      <td>{match.score}</td>
-      <td>
-        <span className={`confidence-badge confidence-${match.confidence}`}>{confidenceLabel(match.confidence)}</span>
-      </td>
-      <td>{formatDurationUs(match.offsetUs)}</td>
-      <td>{match.operation || 'N/D'}</td>
-    </tr>
+    <div className="correlation-detail-item">
+      <span>{label}</span>
+      <strong className={mono ? 'mono' : ''}>{value}</strong>
+    </div>
   );
+}
+
+function userFriendlyMessage(job: CorrelationJobStatus): string {
+  if (job.state === 'completed') return 'Korelacja zakonczona pomyslnie.';
+  if (job.state === 'failed') return 'Korelacja zakonczyla sie bledem.';
+  if (job.state === 'cancelled') return 'Korelacja anulowana.';
+  const stage = stageLabel(job.progress.stage);
+  const pct = job.progress.total > 0 ? ` (${Math.round((job.progress.current / job.progress.total) * 100)}%)` : '';
+  return `${stage}${pct}`;
 }
 
 function stageLabel(stage: CorrelationJobStatus['progress']['stage']): string {
   switch (stage) {
     case 'prepare':
-      return 'przygotowanie';
+      return 'Przygotowanie';
     case 'ingest_pcap':
-      return 'odczyt PCAP';
+      return 'Odczyt PCAP';
     case 'ingest_procmon':
-      return 'odczyt Procmon';
+      return 'Odczyt Procmon';
     case 'align':
-      return 'synchronizacja czasu';
+      return 'Synchronizacja czasu';
     case 'match':
-      return 'dopasowanie';
+      return 'Dopasowywanie';
     case 'finalize':
-      return 'finalizacja';
+      return 'Finalizacja';
     default:
       return stage;
   }
@@ -267,15 +374,15 @@ function stageLabel(stage: CorrelationJobStatus['progress']['stage']): string {
 function statusLabel(state: CorrelationJobStatus['state']): string {
   switch (state) {
     case 'queued':
-      return 'W KOLEJCE';
+      return 'Kolejka';
     case 'running':
-      return 'TRWA';
+      return 'Trwa';
     case 'completed':
-      return 'ZAKONCZONO';
+      return 'Gotowe';
     case 'failed':
-      return 'BLAD';
+      return 'Blad';
     case 'cancelled':
-      return 'ANULOWANO';
+      return 'Anulowano';
     default:
       return state;
   }
@@ -284,11 +391,11 @@ function statusLabel(state: CorrelationJobStatus['state']): string {
 function confidenceLabel(confidence: CorrelationMatch['confidence']): string {
   switch (confidence) {
     case 'high':
-      return 'WYSOKA';
+      return 'Wysoka';
     case 'medium':
-      return 'SREDNIA';
+      return 'Srednia';
     case 'low':
-      return 'NISKA';
+      return 'Niska';
     default:
       return confidence;
   }
@@ -297,11 +404,11 @@ function confidenceLabel(confidence: CorrelationMatch['confidence']): string {
 function parserModeLabel(mode: CorrelationReportV1['diagnostics']['parserMode']): string {
   switch (mode) {
     case 'hybrid':
-      return 'hybrydowy';
+      return 'Hybrydowy';
     case 'xml_only':
-      return 'tylko XML';
+      return 'XML';
     case 'parser_only':
-      return 'tylko parser';
+      return 'Parser';
     default:
       return mode;
   }
@@ -328,19 +435,36 @@ function overallProgressPercent(job: CorrelationJobStatus): number {
   return start + span * subProgress;
 }
 
+function formatTimestampUs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  const ms = Math.floor(value / 1000);
+  if (ms > 946684800000 && ms < 4102444800000) {
+    const date = new Date(ms);
+    return date.toLocaleString('pl-PL', {
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  }
+  return formatDurationUs(value);
+}
+
+function formatDurationUs(value: number): string {
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2)} s`;
+  if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(2)} ms`;
+  return `${sign}${abs} us`;
+}
+
 function formatDebugTs(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString('pl-PL', { hour12: false });
-}
-
-function formatEventAge(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'brak';
-  const deltaMs = Date.now() - date.getTime();
-  if (deltaMs < 2000) return 'przed chwila';
-  if (deltaMs < 60_000) return `${Math.floor(deltaMs / 1000)} s temu`;
-  return `${Math.floor(deltaMs / 60_000)} min temu`;
 }
 
 function debugLevelLabel(level: 'info' | 'warning' | 'error'): string {
@@ -348,7 +472,7 @@ function debugLevelLabel(level: 'info' | 'warning' | 'error'): string {
     case 'info':
       return 'INFO';
     case 'warning':
-      return 'OSTRZEZENIE';
+      return 'WARN';
     case 'error':
       return 'BLAD';
     default:
@@ -356,16 +480,107 @@ function debugLevelLabel(level: 'info' | 'warning' | 'error'): string {
   }
 }
 
-function formatDurationUs(value: number): string {
-  const sign = value < 0 ? '-' : '';
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) {
-    return `${sign}${(abs / 1_000_000).toFixed(2)} s`;
+function formatOptionalNumber(value: number | null | undefined): string {
+  if (typeof value !== 'number') return '-';
+  return value.toString();
+}
+
+function resolveDisplayIp(
+  match: CorrelationMatch,
+  ipData: Record<string, IpLookupData>
+): { ip: string | null; info: IpLookupData | undefined } {
+  const candidates = listPublicIpCandidates(match);
+  for (const ip of candidates) {
+    const info = lookupIpInfo(ipData, ip);
+    if (info) {
+      return { ip, info };
+    }
   }
-  if (abs >= 1000) {
-    return `${sign}${(abs / 1000).toFixed(2)} ms`;
+  if (candidates.length > 0) {
+    return { ip: candidates[0], info: undefined };
   }
-  return `${sign}${abs} us`;
+  return { ip: null, info: undefined };
+}
+
+function listPublicIpCandidates(match: CorrelationMatch): string[] {
+  const candidates = [match.dstIp, match.srcIp, match.eventRemoteIp];
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of candidates) {
+    if (!raw || !isPublicIp(raw)) continue;
+    const normalized = normalizeIp(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+  return unique;
+}
+
+function lookupIpInfo(ipData: Record<string, IpLookupData>, ip: string): IpLookupData | undefined {
+  const normalized = normalizeIp(ip);
+  if (!normalized) return undefined;
+  return ipData[normalized] ?? ipData[normalized.toLowerCase()];
+}
+
+function normalizeIp(ip: string): string {
+  return ip.trim().toLowerCase();
+}
+
+function isPublicIp(ip: string): boolean {
+  if (!ip || ip === '0.0.0.0' || ip === '255.255.255.255') return false;
+  if (ip.includes(':')) {
+    const normalized = ip.toLowerCase();
+    if (normalized === '::1') return false;
+    if (normalized.startsWith('fe80:')) return false;
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return false;
+    return true;
+  }
+
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4) return false;
+  if (parts[0] === 10) return false;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return false;
+  if (parts[0] === 192 && parts[1] === 168) return false;
+  if (parts[0] === 127) return false;
+  if (parts[0] === 169 && parts[1] === 254) return false;
+  if (parts[0] >= 224) return false;
+  return true;
+}
+
+function getFlagEmoji(countryCode: string): string {
+  const codePoints = countryCode
+    .toUpperCase()
+    .split('')
+    .map((char) => 127397 + char.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = bytes;
+  let idx = 0;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx += 1;
+  }
+  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[idx]}`;
+}
+
+function serviceLabel(match: CorrelationMatch): string {
+  if (typeof match.dstPort === 'number') {
+    if (match.dstPort === 80) return 'HTTP';
+    if (match.dstPort === 443) return 'HTTPS';
+    if (match.dstPort === 53) return 'DNS';
+    if (match.dstPort === 22) return 'SSH';
+    return `Port ${match.dstPort}`;
+  }
+  return '-';
+}
+
+function formatReasons(match: CorrelationMatch): string {
+  if (!match.reasons?.length) return '-';
+  return match.reasons.map((reason) => `${reason.code} (+${reason.score})`).join(', ');
 }
 
 export default CorrelationPanel;

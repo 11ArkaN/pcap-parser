@@ -27,3 +27,4 @@ release/
 # Cache
 .cache/
 sidecar/__pycache__/*
+vendor/*

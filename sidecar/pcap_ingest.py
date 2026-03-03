@@ -129,6 +129,7 @@ def ingest_pcap_to_sqlite(file_path: str, conn: sqlite3.Connection, on_progress:
         write_sessions(conn, pending_rows)
         pending_rows.clear()
 
+    conn.commit()
     return packet_counter
 
 
@@ -142,7 +143,6 @@ def write_sessions(conn: sqlite3.Connection, rows: List[Tuple[object, ...]]) -> 
         """,
         rows,
     )
-    conn.commit()
 
 
 def read_legacy_packets(

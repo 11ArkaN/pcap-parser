@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import type { IpLookupData, ParsedConnection } from '../types';
@@ -14,6 +14,7 @@ interface DataTableProps {
   connections: ParsedConnection[];
   ipData: Record<string, IpLookupData>;
   isPublic: boolean;
+  focusRequest?: { ip: string; requestId: number } | null;
 }
 
 type SortKey = 'ip' | 'asn' | 'isp' | 'country' | 'packets' | 'bytes' | null;
@@ -61,9 +62,11 @@ export interface ExportRow {
   'IP Docelowe': string;
 }
 
-function DataTable({ connections, ipData, isPublic }: DataTableProps) {
+function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataTableProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: null, direction: 'asc' });
+  const [highlightIp, setHighlightIp] = useState<string | null>(null);
+  const tableWrapperRef = useRef<HTMLDivElement | null>(null);
 
   const aggregatedData = useMemo(() => aggregateConnections(connections), [connections]);
 
@@ -137,6 +140,35 @@ function DataTable({ connections, ipData, isPublic }: DataTableProps) {
     return data;
   }, [aggregatedData, searchTerm, sortConfig, ipData]);
 
+  useEffect(() => {
+    if (!focusRequest || !isPublic) return;
+    const targetIp = focusRequest.ip.trim();
+    if (!targetIp) return;
+
+    setSearchTerm(targetIp);
+    setHighlightIp(targetIp);
+
+    const scrollToTarget = () => {
+      const rows = tableWrapperRef.current?.querySelectorAll<HTMLTableRowElement>('tr[data-public-ip]');
+      if (!rows?.length) return;
+      for (const row of Array.from(rows)) {
+        if (row.dataset.publicIp === targetIp) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          break;
+        }
+      }
+    };
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(scrollToTarget);
+    });
+
+    const timer = window.setTimeout(() => {
+      setHighlightIp((current) => (current === targetIp ? null : current));
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [focusRequest?.requestId, focusRequest?.ip, isPublic]);
+
   const handleSort = (key: Exclude<SortKey, null>) => {
     setSortConfig((current) => ({
       key,
@@ -207,7 +239,7 @@ function DataTable({ connections, ipData, isPublic }: DataTableProps) {
         </div>
       </div>
 
-      <div className="data-table-wrapper">
+      <div className="data-table-wrapper" ref={tableWrapperRef}>
         <table className="data-table">
           <thead>
             <tr>
@@ -217,7 +249,7 @@ function DataTable({ connections, ipData, isPublic }: DataTableProps) {
                   <th onClick={() => handleSort('asn')}>ASN {getSortIndicator('asn')}</th>
                   <th onClick={() => handleSort('isp')}>ISP / Organizacja {getSortIndicator('isp')}</th>
                   <th onClick={() => handleSort('country')}>Lokalizacja {getSortIndicator('country')}</th>
-                  <th>Blok CIDR</th>
+                  <th className="cidr-col">Blok CIDR</th>
                 </>
               )}
               {!isPublic && (
@@ -238,7 +270,7 @@ function DataTable({ connections, ipData, isPublic }: DataTableProps) {
               const info = ipData[publicIp] || {};
 
               return (
-                <tr key={index}>
+                <tr key={index} data-public-ip={publicIp} className={highlightIp === publicIp ? 'pcap-focus-row' : undefined}>
                   {isPublic && (
                     <>
                       <td>
@@ -255,8 +287,8 @@ function DataTable({ connections, ipData, isPublic }: DataTableProps) {
                           </div>
                         </div>
                       </td>
-                      <td>
-                        <span className="cidr-block">{(info.cidr as string) || (info.range as string) || 'N/D'}</span>
+                      <td className="cidr-col">
+                        <span className="cidr-block cidr-block-pcap">{(info.cidr as string) || (info.range as string) || 'N/D'}</span>
                       </td>
                     </>
                   )}
@@ -486,3 +518,4 @@ function downloadFile(content: string, filename: string, type: string) {
 }
 
 export default DataTable;
+

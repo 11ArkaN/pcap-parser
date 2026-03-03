@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import gzip
+import hashlib
+import json
+import math
+import multiprocessing as mp
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
-import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -50,6 +56,38 @@ SERVICE_PORTS = {
     "pop3s": 995,
 }
 
+PROC_MON_CACHE_VERSION = "v2"
+BATCH_SIZE = 5000
+PROCMON_DB_COLUMNS: Tuple[str, ...] = (
+    "event_id",
+    "ts_us",
+    "pid",
+    "tid",
+    "process_name",
+    "process_path",
+    "command_line",
+    "user_name",
+    "company",
+    "parent_pid",
+    "integrity_level",
+    "signer",
+    "image_hash",
+    "operation",
+    "result",
+    "path",
+    "detail",
+    "proto",
+    "local_ip",
+    "local_port",
+    "remote_ip",
+    "remote_port",
+    "direction",
+    "source_file",
+)
+_PARSER_AVAILABLE: Optional[bool] = None
+PARALLEL_PARSE_MIN_ITEMS = 120_000
+DEFAULT_MAX_PROC_WORKERS = 8
+
 
 def ingest_procmon_to_sqlite(
     procmon_files: List[str],
@@ -65,6 +103,8 @@ def ingest_procmon_to_sqlite(
 
     exports_dir = Path(output_dir) / "procmon_exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = resolve_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     can_use_procmon_parser = ensure_procmon_parser_available()
     if not can_use_procmon_parser:
@@ -78,26 +118,59 @@ def ingest_procmon_to_sqlite(
             continue
 
         base_date = dt.datetime.fromtimestamp(os.path.getmtime(pml_path), tz=dt.timezone.utc).date()
+        cache_key = build_procmon_cache_key(pml_path)
+        cache_path = cache_dir / f"{cache_key}.jsonl.gz"
         inserted_for_file = 0
         export_messages: List[str] = []
+        used_cache = False
 
-        csv_path = exports_dir / f"{pml_file.stem}-{index}.csv"
-        csv_ok, csv_details = export_pml(procmon_executable, pml_file, csv_path, output_kind="csv")
-        if csv_ok:
-            cli_used = True
-            inserted = parse_csv_to_db(
+        if cache_path.exists():
+            inserted_from_cache = load_cached_events_to_db(
                 conn=conn,
-                csv_path=str(csv_path),
+                cache_path=cache_path,
                 source_pml_path=pml_path,
-                event_id_prefix=f"{pml_file.name}|csv|{index}|",
+                on_progress=on_progress,
+                file_index=index,
+                total_files=total_files,
+            )
+            if inserted_from_cache > 0:
+                inserted_for_file += inserted_from_cache
+                parser_used = True
+                used_cache = True
+                on_progress(index, total_files, f"Cache Procmon: zaladowano {inserted_from_cache:,} eventow")
+
+        if inserted_for_file == 0 and can_use_procmon_parser:
+            inserted = parse_pml_with_procmon_parser_to_db(
+                conn=conn,
+                pml_path=pml_path,
+                event_id_prefix=f"{pml_file.name}|parser|{index}|",
                 base_date=base_date,
                 on_progress=on_progress,
                 file_index=index,
                 total_files=total_files,
             )
+            if inserted > 0:
+                parser_used = True
             inserted_for_file += inserted
-        else:
-            export_messages.append(f"CSV export failed: {csv_details}")
+
+        if inserted_for_file == 0:
+            csv_path = exports_dir / f"{pml_file.stem}-{index}.csv"
+            csv_ok, csv_details = export_pml(procmon_executable, pml_file, csv_path, output_kind="csv")
+            if csv_ok:
+                cli_used = True
+                inserted = parse_csv_to_db(
+                    conn=conn,
+                    csv_path=str(csv_path),
+                    source_pml_path=pml_path,
+                    event_id_prefix=f"{pml_file.name}|csv|{index}|",
+                    base_date=base_date,
+                    on_progress=on_progress,
+                    file_index=index,
+                    total_files=total_files,
+                )
+                inserted_for_file += inserted
+            else:
+                export_messages.append(f"CSV export failed: {csv_details}")
 
         if inserted_for_file == 0:
             xml_path = exports_dir / f"{pml_file.stem}-{index}.xml"
@@ -118,19 +191,13 @@ def ingest_procmon_to_sqlite(
             else:
                 export_messages.append(f"XML export failed: {xml_details}")
 
-        if inserted_for_file == 0 and can_use_procmon_parser:
-            inserted = parse_pml_with_procmon_parser_to_db(
-                conn=conn,
-                pml_path=pml_path,
-                event_id_prefix=f"{pml_file.name}|parser|{index}|",
-                base_date=base_date,
-                on_progress=on_progress,
-                file_index=index,
-                total_files=total_files,
-            )
-            if inserted > 0:
-                parser_used = True
-            inserted_for_file += inserted
+        if inserted_for_file > 0 and not used_cache:
+            try:
+                cached_count = write_source_events_cache(conn, source_pml_path=pml_path, cache_path=cache_path)
+                if cached_count <= 0:
+                    warnings.append(f"Nie zapisano cache Procmon dla {pml_path}.")
+            except Exception as error:
+                warnings.append(f"Blad zapisu cache Procmon ({pml_path}): {error}")
 
         if inserted_for_file == 0:
             warning = f"Brak eventow sieciowych z pliku {pml_path}."
@@ -139,6 +206,7 @@ def ingest_procmon_to_sqlite(
             warnings.append(warning)
 
         total_events += inserted_for_file
+        conn.commit()
         on_progress(index, total_files, f"Procmon: {index}/{total_files} plikow, eventy: {total_events:,}")
 
     parser_mode = "xml_only"
@@ -156,28 +224,103 @@ def ingest_procmon_to_sqlite(
 
 
 def ensure_procmon_parser_available() -> bool:
+    global _PARSER_AVAILABLE
+    if _PARSER_AVAILABLE is not None:
+        return _PARSER_AVAILABLE
     try:
         import procmon_parser  # type: ignore  # noqa: F401
 
+        _PARSER_AVAILABLE = True
         return True
     except Exception:
-        pass
-
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "procmon-parser==0.3.13"],
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-        if completed.returncode != 0:
-            return False
-        import procmon_parser  # type: ignore  # noqa: F401
-
-        return True
-    except Exception:
+        _PARSER_AVAILABLE = False
         return False
+
+
+def resolve_parallel_worker_count(total_reader_items: int) -> int:
+    if total_reader_items < PARALLEL_PARSE_MIN_ITEMS:
+        return 1
+
+    cpu_total = os.cpu_count() or 2
+    env_workers = parse_int(os.getenv("PCAP_ANALYZER_PROCMON_WORKERS"))
+    target = env_workers if env_workers and env_workers > 0 else max(1, cpu_total - 1)
+    target = min(target, DEFAULT_MAX_PROC_WORKERS)
+
+    max_meaningful = max(1, total_reader_items // 80_000)
+    return max(1, min(target, max_meaningful))
+
+
+def resolve_cache_dir() -> Path:
+    env_dir = os.getenv("PCAP_ANALYZER_PROCMON_CACHE_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path(tempfile.gettempdir()) / "pcap-analyzer-procmon-cache"
+
+
+def build_procmon_cache_key(pml_path: str) -> str:
+    stat = os.stat(pml_path)
+    payload = f"{PROC_MON_CACHE_VERSION}|{os.path.abspath(pml_path)}|{stat.st_size}|{stat.st_mtime_ns}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def load_cached_events_to_db(
+    conn: sqlite3.Connection,
+    cache_path: Path,
+    source_pml_path: str,
+    on_progress: ProgressCallback,
+    file_index: int,
+    total_files: int,
+) -> int:
+    inserted_rows: List[Tuple[object, ...]] = []
+    inserted_count = 0
+    with gzip.open(cache_path, "rt", encoding="utf-8") as handle:
+        for line_index, line in enumerate(handle, start=1):
+            raw = line.strip()
+            if not raw:
+                continue
+            record = json.loads(raw)
+            if not isinstance(record, dict):
+                continue
+            row_values: List[object] = []
+            for column in PROCMON_DB_COLUMNS:
+                if column == "source_file":
+                    row_values.append(source_pml_path)
+                else:
+                    row_values.append(record.get(column))
+            inserted_rows.append(tuple(row_values))
+            inserted_count += 1
+
+            if len(inserted_rows) >= BATCH_SIZE:
+                write_procmon_rows(conn, inserted_rows)
+                inserted_rows.clear()
+                if inserted_count % (BATCH_SIZE * 2) == 0:
+                    on_progress(file_index, total_files, f"Cache Procmon: {inserted_count:,} eventow")
+
+            if line_index % 100000 == 0:
+                on_progress(file_index, total_files, f"Cache Procmon: odczyt {line_index:,} linii")
+
+    if inserted_rows:
+        write_procmon_rows(conn, inserted_rows)
+
+    return inserted_count
+
+
+def write_source_events_cache(conn: sqlite3.Connection, source_pml_path: str, cache_path: Path) -> int:
+    query = f"""
+        SELECT {", ".join(PROCMON_DB_COLUMNS)}
+        FROM procmon_events
+        WHERE source_file = ?
+        ORDER BY ts_us ASC
+    """
+    cursor = conn.execute(query, (source_pml_path,))
+    rows = cursor.fetchall()
+    if not rows:
+        return 0
+    with gzip.open(cache_path, "wt", encoding="utf-8") as handle:
+        for row in rows:
+            payload = {column: row[idx] for idx, column in enumerate(PROCMON_DB_COLUMNS)}
+            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    return len(rows)
 
 
 def export_pml(procmon_executable: str, pml_path: Path, output_path: Path, output_kind: str) -> Tuple[bool, str]:
@@ -198,7 +341,7 @@ def export_pml(procmon_executable: str, pml_path: Path, output_path: Path, outpu
 
     for command in commands:
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=1200, check=False)
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=360, check=False)
             time.sleep(0.4)
             if output_path.exists() and output_path.stat().st_size > 0:
                 return True, "ok"
@@ -276,7 +419,7 @@ def parse_csv_to_db(
             inserted_rows.append(row_data)
             inserted_count += 1
 
-            if len(inserted_rows) >= 5000:
+            if len(inserted_rows) >= BATCH_SIZE:
                 write_procmon_rows(conn, inserted_rows)
                 inserted_rows.clear()
                 on_progress(file_index, total_files, f"Procmon CSV: {inserted_count:,} eventow sieciowych")
@@ -319,7 +462,7 @@ def parse_xml_to_db(
         inserted_rows.append(row_data)
         inserted_count += 1
 
-        if len(inserted_rows) >= 5000:
+        if len(inserted_rows) >= BATCH_SIZE:
             write_procmon_rows(conn, inserted_rows)
             inserted_rows.clear()
             on_progress(file_index, total_files, f"Procmon XML: {inserted_count:,} eventow sieciowych")
@@ -354,58 +497,70 @@ def parse_pml_with_procmon_parser_to_db(
         return 0
 
     try:
-        total_reader_items = len(reader)
-        for idx in range(total_reader_items):
+        try:
+            total_reader_items = len(reader)
+        except Exception:
+            total_reader_items = 0
+
+        worker_count = resolve_parallel_worker_count(total_reader_items)
+        if total_reader_items > 0 and worker_count > 1:
+            on_progress(
+                file_index,
+                total_files,
+                f"procmon-parser: uruchamianie trybu rownoleglego ({worker_count} workerow, {total_reader_items:,} eventow)",
+            )
+            parallel_count = parse_pml_with_procmon_parser_parallel_to_db(
+                conn=conn,
+                pml_path=pml_path,
+                event_id_prefix=event_id_prefix,
+                base_date=base_date,
+                on_progress=on_progress,
+                file_index=file_index,
+                total_files=total_files,
+                total_reader_items=total_reader_items,
+                worker_count=worker_count,
+            )
+            if parallel_count >= 0:
+                on_progress(
+                    file_index,
+                    total_files,
+                    f"procmon-parser: koniec trybu rownoleglego, eventy sieciowe: {parallel_count:,}",
+                )
+                return parallel_count
+            on_progress(file_index, total_files, "procmon-parser: fallback do trybu sekwencyjnego")
+
+        try:
+            iterator = iter(reader)
+            iterator_mode = True
+        except Exception:
+            iterator_mode = False
+
+        idx = -1
+        while True:
+            idx += 1
             try:
-                event = reader[idx]
+                if iterator_mode:
+                    event = next(iterator)
+                else:
+                    if total_reader_items <= 0 or idx >= total_reader_items:
+                        break
+                    event = reader[idx]
+            except StopIteration:
+                break
             except Exception:
                 if (idx + 1) % 25000 == 0:
-                    on_progress(
-                        file_index,
-                        total_files,
-                        f"procmon-parser: skan {idx + 1:,}/{total_reader_items:,}, eventy sieciowe: {inserted_count:,}",
-                    )
+                    if total_reader_items > 0:
+                        on_progress(
+                            file_index,
+                            total_files,
+                            f"procmon-parser: skan {idx + 1:,}/{total_reader_items:,}, eventy sieciowe: {inserted_count:,}",
+                        )
+                    else:
+                        on_progress(file_index, total_files, f"procmon-parser: skan {idx + 1:,}, eventy sieciowe: {inserted_count:,}")
                 continue
 
-            operation = stringify_attr(event, "operation")
-            category = stringify_attr(event, "event_class")
-            details_obj = getattr(event, "details", None)
-            detail_text = stringify_details(details_obj)
-            path_value = stringify_attr(event, "path")
-
-            record = {
-                "operation": operation,
-                "category": category,
-                "detail": detail_text,
-                "path": path_value,
-                "result": stringify_attr(event, "result"),
-                "pid": str(parse_int(getattr(event, "process", None).pid if getattr(event, "process", None) else None) or ""),
-                "tid": str(parse_int(getattr(event, "tid", None)) or ""),
-            }
-
-            process_obj = getattr(event, "process", None)
-            if process_obj is not None:
-                process_name = stringify_attr(process_obj, "process_name") or stringify_attr(process_obj, "image_path")
-                if process_name:
-                    record["processname"] = process_name
-                    if not record["pid"]:
-                        record["pid"] = str(parse_int(getattr(process_obj, "pid", None)) or "")
-
-            filetime_value = parse_int(getattr(event, "date_filetime", None))
-            if filetime_value is not None:
-                ts_us = filetime_to_epoch_us(filetime_value)
-                record["timestamp"] = str(ts_us)
-            else:
-                date_attr = getattr(event, "date", None)
-                if callable(date_attr):
-                    try:
-                        date_val = date_attr()
-                        record["time"] = str(date_val)
-                    except Exception:
-                        pass
-
-            row_data = record_to_db_row(
-                record=record,
+            row_data = procmon_event_to_db_row(
+                event=event,
                 base_date=base_date,
                 event_id=f"{event_id_prefix}{idx + 1}",
                 source_pml_path=pml_path,
@@ -415,17 +570,20 @@ def parse_pml_with_procmon_parser_to_db(
             inserted_rows.append(row_data)
             inserted_count += 1
 
-            if len(inserted_rows) >= 5000:
+            if len(inserted_rows) >= BATCH_SIZE:
                 write_procmon_rows(conn, inserted_rows)
                 inserted_rows.clear()
                 on_progress(file_index, total_files, f"procmon-parser: {inserted_count:,} eventow sieciowych")
 
             if (idx + 1) % 25000 == 0:
-                on_progress(
-                    file_index,
-                    total_files,
-                    f"procmon-parser: skan {idx + 1:,}/{total_reader_items:,}, eventy sieciowe: {inserted_count:,}",
-                )
+                if total_reader_items > 0:
+                    on_progress(
+                        file_index,
+                        total_files,
+                        f"procmon-parser: skan {idx + 1:,}/{total_reader_items:,}, eventy sieciowe: {inserted_count:,}",
+                    )
+                else:
+                    on_progress(file_index, total_files, f"procmon-parser: skan {idx + 1:,}, eventy sieciowe: {inserted_count:,}")
     finally:
         try:
             handle.close()
@@ -438,6 +596,187 @@ def parse_pml_with_procmon_parser_to_db(
     on_progress(file_index, total_files, f"procmon-parser: koniec skanu, eventy sieciowe: {inserted_count:,}")
 
     return inserted_count
+
+
+def parse_pml_with_procmon_parser_parallel_to_db(
+    conn: sqlite3.Connection,
+    pml_path: str,
+    event_id_prefix: str,
+    base_date: dt.date,
+    on_progress: ProgressCallback,
+    file_index: int,
+    total_files: int,
+    total_reader_items: int,
+    worker_count: int,
+) -> int:
+    if total_reader_items <= 0 or worker_count <= 1:
+        return -1
+
+    chunk_size = max(40_000, int(math.ceil(total_reader_items / worker_count)))
+    ranges: List[Tuple[int, int]] = []
+    start = 0
+    while start < total_reader_items:
+        end = min(total_reader_items, start + chunk_size)
+        ranges.append((start, end))
+        start = end
+
+    if len(ranges) < 2:
+        return -1
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="pcap-procmon-parallel-"))
+    tasks: List[Dict[str, object]] = []
+    for part_idx, (part_start, part_end) in enumerate(ranges):
+        tasks.append(
+            {
+                "pml_path": pml_path,
+                "event_id_prefix": event_id_prefix,
+                "base_date": base_date.isoformat(),
+                "source_pml_path": pml_path,
+                "start": part_start,
+                "end": part_end,
+                "out_path": str(tmp_dir / f"part-{part_idx:04d}.jsonl.gz"),
+            }
+        )
+
+    inserted_total = 0
+    try:
+        ctx = mp.get_context("spawn")
+        process_count = min(worker_count, len(tasks))
+        with ctx.Pool(processes=process_count) as pool:
+            completed = 0
+            for out_path, raw_inserted, error in pool.imap_unordered(parse_procmon_chunk_to_cache, tasks):
+                completed += 1
+                if error:
+                    raise RuntimeError(error)
+                if out_path and raw_inserted > 0:
+                    loaded = load_cached_events_to_db(
+                        conn=conn,
+                        cache_path=Path(out_path),
+                        source_pml_path=pml_path,
+                        on_progress=on_progress,
+                        file_index=file_index,
+                        total_files=total_files,
+                    )
+                    inserted_total += loaded
+                on_progress(
+                    file_index,
+                    total_files,
+                    f"procmon-parser parallel: fragment {completed:,}/{len(tasks):,}, eventy: {inserted_total:,}",
+                )
+        return inserted_total
+    except Exception:
+        return -1
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def parse_procmon_chunk_to_cache(task: Dict[str, object]) -> Tuple[str, int, Optional[str]]:
+    out_path = str(task.get("out_path") or "")
+    try:
+        from procmon_parser import ProcmonLogsReader  # type: ignore
+
+        pml_path = str(task["pml_path"])
+        event_id_prefix = str(task["event_id_prefix"])
+        base_date = dt.date.fromisoformat(str(task["base_date"]))
+        source_pml_path = str(task["source_pml_path"])
+        start = int(task["start"])
+        end = int(task["end"])
+
+        inserted = 0
+        with open(pml_path, "rb") as handle:
+            reader = ProcmonLogsReader(handle)
+            with gzip.open(out_path, "wt", encoding="utf-8") as out_handle:
+                for idx in range(start, end):
+                    try:
+                        event = reader[idx]
+                    except Exception:
+                        continue
+                    row = procmon_event_to_db_row(
+                        event=event,
+                        base_date=base_date,
+                        event_id=f"{event_id_prefix}{idx + 1}",
+                        source_pml_path=source_pml_path,
+                    )
+                    if not row:
+                        continue
+                    payload = {column: row[pos] for pos, column in enumerate(PROCMON_DB_COLUMNS)}
+                    out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                    inserted += 1
+        return out_path, inserted, None
+    except Exception as error:
+        try:
+            if out_path and os.path.exists(out_path):
+                os.remove(out_path)
+        except Exception:
+            pass
+        return out_path, 0, str(error)
+
+
+def procmon_event_to_db_row(
+    event: Any,
+    base_date: dt.date,
+    event_id: str,
+    source_pml_path: str,
+) -> Optional[Tuple[object, ...]]:
+    operation = stringify_attr(event, "operation")
+    category = stringify_attr(event, "event_class")
+    details_obj = getattr(event, "details", None)
+    detail_text = stringify_details(details_obj)
+    path_value = stringify_attr(event, "path")
+    process_obj = getattr(event, "process", None)
+
+    process_pid = parse_int(getattr(process_obj, "pid", None)) if process_obj is not None else None
+    process_path = pick_first_attr(process_obj, ["image_path", "process_path", "path", "image"])
+    process_name = pick_first_attr(process_obj, ["process_name", "name"]) or process_path
+    command_line = pick_first_attr(process_obj, ["command_line", "cmdline", "commandline"])
+    user_name = pick_first_attr(process_obj, ["user", "username", "user_name"])
+    company = pick_first_attr(process_obj, ["company", "publisher"])
+    parent_pid = parse_int(pick_first_attr(process_obj, ["parent_pid", "ppid", "parentprocessid"]))
+    integrity_level = pick_first_attr(process_obj, ["integrity_level", "integrity", "integritylevel"])
+    signer = pick_first_attr(process_obj, ["signer", "signature", "verified_signer"])
+    image_hash = pick_first_attr(process_obj, ["sha256", "sha1", "hash", "image_hash"])
+
+    record = {
+        "operation": operation,
+        "category": category,
+        "detail": detail_text,
+        "path": path_value,
+        "result": stringify_attr(event, "result"),
+        "pid": str(process_pid or parse_int(getattr(event, "pid", None)) or ""),
+        "tid": str(parse_int(getattr(event, "tid", None)) or ""),
+        "processname": process_name,
+        "processpath": process_path,
+        "commandline": command_line,
+        "user": user_name,
+        "company": company,
+        "parentpid": str(parent_pid or ""),
+        "integritylevel": integrity_level,
+        "signer": signer,
+        "hash": image_hash,
+    }
+
+    filetime_value = parse_int(getattr(event, "date_filetime", None))
+    if filetime_value is not None:
+        ts_us = filetime_to_epoch_us(filetime_value)
+        record["timestamp"] = str(ts_us)
+    else:
+        date_attr = getattr(event, "date", None)
+        if callable(date_attr):
+            try:
+                date_val = date_attr()
+                record["time"] = str(date_val)
+            except Exception:
+                pass
+
+    return record_to_db_row(
+        record=record,
+        base_date=base_date,
+        event_id=event_id,
+        source_pml_path=source_pml_path,
+    )
 
 
 def stringify_attr(obj: Any, attr_name: str) -> str:
@@ -455,6 +794,14 @@ def stringify_attr(obj: Any, attr_name: str) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def pick_first_attr(obj: Any, candidates: List[str]) -> str:
+    for candidate in candidates:
+        value = stringify_attr(obj, candidate)
+        if value:
+            return value
+    return ""
 
 
 def stringify_details(details_obj: Any) -> str:
@@ -489,6 +836,14 @@ def record_to_db_row(
     detail = value_of(record, "detail")
     result = value_of(record, "result")
     process_name = value_of(record, "processname")
+    process_path = value_any(record, ["processpath", "imagepath", "exepath", "processimagepath", "image"])
+    command_line = value_any(record, ["commandline", "cmdline", "command"])
+    user_name = value_any(record, ["user", "username", "accountname"])
+    company = value_any(record, ["company", "publisher"])
+    parent_pid = parse_int(value_any(record, ["parentpid", "parentprocessid", "ppid"]))
+    integrity_level = value_any(record, ["integritylevel", "integrity"])
+    signer = value_any(record, ["signer", "signature", "verifiedsigner"])
+    image_hash = value_any(record, ["sha256", "sha1", "hash", "imagehash"])
     pid = parse_int(value_of(record, "pid"))
     tid = parse_int(value_of(record, "tid"))
     proto = operation_to_proto(operation)
@@ -503,6 +858,14 @@ def record_to_db_row(
         pid,
         tid,
         process_name,
+        process_path,
+        command_line,
+        user_name,
+        company,
+        parent_pid,
+        integrity_level,
+        signer,
+        image_hash,
         operation,
         result,
         path,
@@ -521,13 +884,13 @@ def write_procmon_rows(conn: sqlite3.Connection, rows: List[Tuple[object, ...]])
     conn.executemany(
         """
         INSERT OR IGNORE INTO procmon_events (
-          event_id, ts_us, pid, tid, process_name, operation, result, path, detail,
+          event_id, ts_us, pid, tid, process_name, process_path, command_line, user_name, company, parent_pid,
+          integrity_level, signer, image_hash, operation, result, path, detail,
           proto, local_ip, local_port, remote_ip, remote_port, direction, source_file
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
-    conn.commit()
 
 
 def extract_record(elem: ET.Element) -> Dict[str, str]:
@@ -552,6 +915,14 @@ def value_of(record: Dict[str, str], key: str) -> Optional[str]:
         normalized = normalize_key(option)
         if normalized in record and record[normalized]:
             return record[normalized]
+    return None
+
+
+def value_any(record: Dict[str, str], keys: List[str]) -> Optional[str]:
+    for key in keys:
+        value = value_of(record, key)
+        if value:
+            return value
     return None
 
 

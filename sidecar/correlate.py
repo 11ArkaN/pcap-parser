@@ -38,6 +38,14 @@ class ProcmonEvent:
     pid: Optional[int]
     tid: Optional[int]
     process_name: Optional[str]
+    process_path: Optional[str]
+    command_line: Optional[str]
+    user_name: Optional[str]
+    company: Optional[str]
+    parent_pid: Optional[int]
+    integrity_level: Optional[str]
+    signer: Optional[str]
+    image_hash: Optional[str]
     operation: Optional[str]
     result: Optional[str]
     proto: str
@@ -368,7 +376,8 @@ def query_events_for_session(
 
     endpoint_sql = " OR ".join(clauses) if clauses else "1=1"
     query = f"""
-        SELECT event_id, ts_us, pid, tid, process_name, operation, result, proto, local_ip, local_port, remote_ip, remote_port, direction
+        SELECT event_id, ts_us, pid, tid, process_name, process_path, command_line, user_name, company, parent_pid,
+               integrity_level, signer, image_hash, operation, result, proto, local_ip, local_port, remote_ip, remote_port, direction
         FROM procmon_events
         WHERE proto = ?
           AND ts_us BETWEEN ? AND ?
@@ -388,14 +397,22 @@ def query_events_for_session(
                 pid=row[2],
                 tid=row[3],
                 process_name=row[4],
-                operation=row[5],
-                result=row[6],
-                proto=row[7],
-                local_ip=row[8],
-                local_port=row[9],
-                remote_ip=row[10],
-                remote_port=row[11],
-                direction=row[12] or "unknown",
+                process_path=row[5],
+                command_line=row[6],
+                user_name=row[7],
+                company=row[8],
+                parent_pid=row[9],
+                integrity_level=row[10],
+                signer=row[11],
+                image_hash=row[12],
+                operation=row[13],
+                result=row[14],
+                proto=row[15],
+                local_ip=row[16],
+                local_port=row[17],
+                remote_ip=row[18],
+                remote_port=row[19],
+                direction=row[20] or "unknown",
             )
         )
     return events
@@ -644,8 +661,21 @@ def build_report(
                 "pid": event.pid,
                 "tid": event.tid,
                 "processName": event.process_name,
+                "processPath": event.process_path,
+                "commandLine": event.command_line,
+                "userName": event.user_name,
+                "company": event.company,
+                "parentPid": event.parent_pid,
+                "integrityLevel": event.integrity_level,
+                "signer": event.signer,
+                "imageHash": event.image_hash,
                 "operation": event.operation,
                 "result": event.result,
+                "eventLocalIp": event.local_ip,
+                "eventLocalPort": event.local_port,
+                "eventRemoteIp": event.remote_ip,
+                "eventRemotePort": event.remote_port,
+                "eventDirection": event.direction,
                 "score": edge.score,
                 "confidence": score_to_confidence(edge.score),
                 "offsetUs": edge.offset_us,
@@ -662,9 +692,20 @@ def build_report(
                 "tsUs": event.ts_us,
                 "pid": event.pid,
                 "processName": event.process_name,
+                "processPath": event.process_path,
+                "commandLine": event.command_line,
+                "userName": event.user_name,
+                "company": event.company,
+                "parentPid": event.parent_pid,
+                "integrityLevel": event.integrity_level,
+                "signer": event.signer,
+                "imageHash": event.image_hash,
                 "operation": event.operation,
+                "eventLocalIp": event.local_ip,
+                "eventLocalPort": event.local_port,
                 "remoteIp": event.remote_ip,
                 "remotePort": event.remote_port,
+                "eventDirection": event.direction,
                 "reason": "No session match.",
             }
         )
