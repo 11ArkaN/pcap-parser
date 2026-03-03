@@ -54,6 +54,17 @@ bun test
 bun run test:captures
 ```
 
+## Quality Gates
+
+- Type-check: `bunx tsc --noEmit`
+- Tests: `bun test`
+- CI workflow: `.github/workflows/ci.yml`
+
+## Contributing & Security
+
+- Contribution guide: `CONTRIBUTING.md`
+- Security policy: `SECURITY.md`
+
 ## Process Monitor Correlation
 
 Correlation runs in a Python sidecar process and uses:
@@ -107,4 +118,4 @@ pcap-analyzer/
 
 ## License
 
-MIT
+MIT (see `LICENSE`)
