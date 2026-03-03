@@ -1,5 +1,5 @@
-﻿import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'fs';
+import { describe, expect, test } from 'bun:test';
+import { existsSync, readFileSync } from 'fs';
 import { aggregateConnections, prepareExportData } from '../src/components/DataTable';
 import { parsePcap, parsePcapDetailed } from '../src/utils/pcapParser';
 import type { IpLookupData } from '../src/types';
@@ -10,9 +10,15 @@ async function loadTableRows(filePath: string) {
   return { parsed, rows };
 }
 
+const WIFI_CAPTURE = 'captures/Wifi.pcapng';
+const TEST1_CAPTURE = 'captures/Test1.pcapng';
+const hasWifiCapture = existsSync(WIFI_CAPTURE);
+const hasTest1Capture = existsSync(TEST1_CAPTURE);
+const captureTest = (enabled: boolean) => (enabled ? test : test.skip);
+
 describe('Capture regression - table data', () => {
-  test('Wifi.pcapng table aggregation remains stable', async () => {
-    const { parsed, rows } = await loadTableRows('captures/Wifi.pcapng');
+  captureTest(hasWifiCapture)('Wifi.pcapng table aggregation remains stable', async () => {
+    const { parsed, rows } = await loadTableRows(WIFI_CAPTURE);
 
     expect(parsed.length).toBe(16367);
     expect(rows.length).toBe(127);
@@ -44,8 +50,8 @@ describe('Capture regression - table data', () => {
     });
   });
 
-  test('Test1.pcapng table aggregation remains stable', async () => {
-    const { parsed, rows } = await loadTableRows('captures/Test1.pcapng');
+  captureTest(hasTest1Capture)('Test1.pcapng table aggregation remains stable', async () => {
+    const { parsed, rows } = await loadTableRows(TEST1_CAPTURE);
 
     expect(parsed.length).toBe(5166);
     expect(rows.length).toBe(85);
@@ -76,8 +82,8 @@ describe('Capture regression - table data', () => {
     });
   });
 
-  test('Export row uses IP metadata for table-visible columns', async () => {
-    const { rows } = await loadTableRows('captures/Test1.pcapng');
+  captureTest(hasTest1Capture)('Export row uses IP metadata for table-visible columns', async () => {
+    const { rows } = await loadTableRows(TEST1_CAPTURE);
     const googleRow = rows.find((row) => row.src === '192.168.1.18' && row.dst === '35.230.86.105');
 
     expect(googleRow).toBeDefined();
@@ -105,8 +111,8 @@ describe('Capture regression - table data', () => {
     });
   });
 
-  test('Parser reports truncation when maxConnections is reached', async () => {
-    const input = new Uint8Array(readFileSync('captures/Wifi.pcapng'));
+  captureTest(hasWifiCapture)('Parser reports truncation when maxConnections is reached', async () => {
+    const input = new Uint8Array(readFileSync(WIFI_CAPTURE));
     const result = await parsePcapDetailed(input, { maxConnections: 500 });
 
     expect(result.connections.length).toBe(500);
