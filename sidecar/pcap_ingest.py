@@ -37,6 +37,7 @@ def ingest_pcap_to_sqlite(file_path: str, conn: sqlite3.Connection, on_progress:
     sessions: Dict[str, SessionAccumulator] = {}
     serials: Dict[str, int] = {}
     pending_rows: List[Tuple[object, ...]] = []
+    dns_records: Dict[Tuple[str, str], List[int]] = {}
     packet_counter = 0
 
     def flush_session(session_key: str) -> None:
@@ -63,6 +64,18 @@ def ingest_pcap_to_sqlite(file_path: str, conn: sqlite3.Connection, on_progress:
 
     def process_packet(ts_us: int, payload: bytes, packet_len: int) -> None:
         nonlocal packet_counter
+        for hostname, resolved_ip in extract_dns_answers_from_frame(payload):
+            key = (hostname, resolved_ip)
+            state = dns_records.get(key)
+            if state is None:
+                dns_records[key] = [ts_us, ts_us, 1]
+            else:
+                if ts_us < state[0]:
+                    state[0] = ts_us
+                if ts_us > state[1]:
+                    state[1] = ts_us
+                state[2] += 1
+
         parsed = parse_packet(payload, packet_len)
         if not parsed:
             return
@@ -129,6 +142,9 @@ def ingest_pcap_to_sqlite(file_path: str, conn: sqlite3.Connection, on_progress:
         write_sessions(conn, pending_rows)
         pending_rows.clear()
 
+    if dns_records:
+        write_dns_answers(conn, dns_records)
+
     conn.commit()
     return packet_counter
 
@@ -140,6 +156,22 @@ def write_sessions(conn: sqlite3.Connection, rows: List[Tuple[object, ...]]) -> 
           session_id, proto, src_ip, src_port, dst_ip, dst_port,
           first_ts_us, last_ts_us, packet_count, byte_count
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def write_dns_answers(conn: sqlite3.Connection, dns_records: Dict[Tuple[str, str], List[int]]) -> None:
+    rows: List[Tuple[object, ...]] = []
+    for (hostname, resolved_ip), state in dns_records.items():
+        rows.append((hostname, resolved_ip, int(state[0]), int(state[1]), int(state[2])))
+    if not rows:
+        return
+    conn.executemany(
+        """
+        INSERT INTO pcap_dns_answers (
+          hostname, resolved_ip, first_seen_us, last_seen_us, hit_count
+        ) VALUES (?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -325,3 +357,229 @@ def protocol_timeout_us(proto: str) -> int:
     if proto == "UDP":
         return 15_000_000
     return 10_000_000
+
+
+def extract_dns_answers_from_frame(frame: bytes) -> List[Tuple[str, str]]:
+    if len(frame) < ETH_LEN:
+        return []
+
+    eth_type = int.from_bytes(frame[12:14], "big")
+    offset = ETH_LEN
+    if eth_type in (ETH_TYPE_VLAN, ETH_TYPE_QINQ) and len(frame) >= offset + 4:
+        eth_type = int.from_bytes(frame[offset + 2 : offset + 4], "big")
+        offset += 4
+
+    if eth_type == ETH_TYPE_IPV4:
+        return extract_dns_answers_from_ipv4(frame[offset:])
+    if eth_type == ETH_TYPE_IPV6:
+        return extract_dns_answers_from_ipv6(frame[offset:])
+    return []
+
+
+def extract_dns_answers_from_ipv4(payload: bytes) -> List[Tuple[str, str]]:
+    if len(payload) < 20:
+        return []
+    version = payload[0] >> 4
+    ihl = (payload[0] & 0x0F) * 4
+    if version != 4 or ihl < 20 or len(payload) < ihl + 8:
+        return []
+    proto = payload[9]
+    if proto != 17:
+        return []
+    src_port = int.from_bytes(payload[ihl : ihl + 2], "big")
+    dst_port = int.from_bytes(payload[ihl + 2 : ihl + 4], "big")
+    if not is_dns_port(src_port) and not is_dns_port(dst_port):
+        return []
+    udp_len = int.from_bytes(payload[ihl + 4 : ihl + 6], "big")
+    if udp_len < 8:
+        return []
+    udp_payload_start = ihl + 8
+    udp_payload_end = min(len(payload), ihl + udp_len)
+    if udp_payload_end <= udp_payload_start:
+        return []
+    return parse_dns_response_payload(payload[udp_payload_start:udp_payload_end])
+
+
+def extract_dns_answers_from_ipv6(payload: bytes) -> List[Tuple[str, str]]:
+    if len(payload) < 48:
+        return []
+    version = payload[0] >> 4
+    if version != 6:
+        return []
+    next_header = payload[6]
+    if next_header != 17:
+        return []
+    udp_offset = 40
+    src_port = int.from_bytes(payload[udp_offset : udp_offset + 2], "big")
+    dst_port = int.from_bytes(payload[udp_offset + 2 : udp_offset + 4], "big")
+    if not is_dns_port(src_port) and not is_dns_port(dst_port):
+        return []
+    udp_len = int.from_bytes(payload[udp_offset + 4 : udp_offset + 6], "big")
+    if udp_len < 8:
+        return []
+    udp_payload_start = udp_offset + 8
+    udp_payload_end = min(len(payload), udp_offset + udp_len)
+    if udp_payload_end <= udp_payload_start:
+        return []
+    return parse_dns_response_payload(payload[udp_payload_start:udp_payload_end])
+
+
+def is_dns_port(port: int) -> bool:
+    return port in (53, 5353)
+
+
+def parse_dns_response_payload(payload: bytes) -> List[Tuple[str, str]]:
+    if len(payload) < 12:
+        return []
+
+    flags = int.from_bytes(payload[2:4], "big")
+    is_response = bool(flags & 0x8000)
+    if not is_response:
+        return []
+
+    qdcount = int.from_bytes(payload[4:6], "big")
+    ancount = int.from_bytes(payload[6:8], "big")
+    if ancount <= 0:
+        return []
+
+    offset = 12
+    questions: List[str] = []
+    for _ in range(qdcount):
+        qname, offset = decode_dns_name(payload, offset)
+        if offset is None:
+            return []
+        if offset + 4 > len(payload):
+            return []
+        offset += 4
+        if qname:
+            questions.append(qname)
+
+    cname_map: Dict[str, str] = {}
+    answer_pairs: List[Tuple[str, str]] = []
+    for _ in range(ancount):
+        rr_name, next_offset = decode_dns_name(payload, offset)
+        if next_offset is None:
+            return answer_pairs
+        offset = next_offset
+        if offset + 10 > len(payload):
+            return answer_pairs
+        rr_type = int.from_bytes(payload[offset : offset + 2], "big")
+        rr_class = int.from_bytes(payload[offset + 2 : offset + 4], "big")
+        rdlength = int.from_bytes(payload[offset + 8 : offset + 10], "big")
+        rdata_offset = offset + 10
+        rdata_end = rdata_offset + rdlength
+        if rdata_end > len(payload):
+            return answer_pairs
+
+        if rr_class == 1:
+            if rr_type == 1 and rdlength == 4:
+                target_ip = ".".join(str(part) for part in payload[rdata_offset:rdata_end])
+                append_dns_pair(answer_pairs, rr_name, target_ip)
+            elif rr_type == 28 and rdlength == 16:
+                target_ip = str(ipaddress.IPv6Address(payload[rdata_offset:rdata_end]))
+                append_dns_pair(answer_pairs, rr_name, target_ip)
+            elif rr_type == 5:
+                cname_target, _ = decode_dns_name(payload, rdata_offset)
+                if rr_name and cname_target:
+                    cname_map[rr_name] = cname_target
+        offset = rdata_end
+
+    if cname_map and answer_pairs:
+        by_host: Dict[str, List[str]] = {}
+        for host, target_ip in answer_pairs:
+            by_host.setdefault(host, []).append(target_ip)
+        propagated: List[Tuple[str, str]] = []
+        for alias, canonical in cname_map.items():
+            ips = by_host.get(canonical, [])
+            for target_ip in ips:
+                propagated.append((alias, target_ip))
+        answer_pairs.extend(propagated)
+
+    if questions and answer_pairs:
+        question_seed = questions[0]
+        seeded: List[Tuple[str, str]] = []
+        for _host, target_ip in answer_pairs:
+            seeded.append((question_seed, target_ip))
+        answer_pairs.extend(seeded)
+
+    deduped: List[Tuple[str, str]] = []
+    seen = set()
+    for host, target_ip in answer_pairs:
+        normalized_host = normalize_hostname(host)
+        if not normalized_host:
+            continue
+        key = (normalized_host, target_ip)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
+
+
+def append_dns_pair(pairs: List[Tuple[str, str]], host: Optional[str], target_ip: str) -> None:
+    if not host:
+        return
+    normalized_ip = normalize_ip_literal(target_ip)
+    if not normalized_ip:
+        return
+    pairs.append((host, normalized_ip))
+
+
+def decode_dns_name(payload: bytes, offset: int, depth: int = 0) -> Tuple[Optional[str], Optional[int]]:
+    if offset >= len(payload):
+        return None, None
+    if depth > 24:
+        return None, None
+
+    labels: List[str] = []
+    current = offset
+    jumped = False
+    after_jump_offset: Optional[int] = None
+
+    while True:
+        if current >= len(payload):
+            return None, None
+        length = payload[current]
+        if length == 0:
+            current += 1
+            break
+        if (length & 0xC0) == 0xC0:
+            if current + 1 >= len(payload):
+                return None, None
+            pointer = ((length & 0x3F) << 8) | payload[current + 1]
+            if not jumped:
+                after_jump_offset = current + 2
+                jumped = True
+            label, _ = decode_dns_name(payload, pointer, depth + 1)
+            if label:
+                labels.append(label)
+            current += 2
+            break
+        current += 1
+        if current + length > len(payload):
+            return None, None
+        try:
+            labels.append(payload[current : current + length].decode("utf-8", errors="ignore"))
+        except Exception:
+            return None, None
+        current += length
+
+    hostname = normalize_hostname(".".join(part for part in labels if part))
+    return hostname, (after_jump_offset if jumped and after_jump_offset is not None else current)
+
+
+def normalize_hostname(hostname: str) -> Optional[str]:
+    text = (hostname or "").strip().strip(".").lower()
+    if not text:
+        return None
+    return text
+
+
+def normalize_ip_literal(value: str) -> Optional[str]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None

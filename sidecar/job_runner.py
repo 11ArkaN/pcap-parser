@@ -63,9 +63,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           source_file TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS pcap_dns_answers (
+          hostname TEXT NOT NULL,
+          resolved_ip TEXT NOT NULL,
+          first_seen_us INTEGER NOT NULL,
+          last_seen_us INTEGER NOT NULL,
+          hit_count INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pcap_time ON pcap_sessions(first_ts_us, last_ts_us);
         CREATE INDEX IF NOT EXISTS idx_procmon_remote ON procmon_events(proto, remote_ip, remote_port, ts_us);
         CREATE INDEX IF NOT EXISTS idx_procmon_pid_time ON procmon_events(pid, ts_us);
+        CREATE INDEX IF NOT EXISTS idx_pcap_dns_host ON pcap_dns_answers(hostname);
+        CREATE INDEX IF NOT EXISTS idx_pcap_dns_ip ON pcap_dns_answers(resolved_ip);
         """
     )
     conn.commit()
@@ -111,6 +121,7 @@ def run() -> int:
             procmon_executable=request["procmonExecutable"],
             conn=conn,
             output_dir=str(output_dir),
+            disable_cache=bool(request.get("options", {}).get("disableProcmonCache", False)),
             on_progress=procmon_progress,
         )
         parser_mode = str(procmon_result.get("parser_mode", "xml_only"))

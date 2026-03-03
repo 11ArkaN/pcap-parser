@@ -49,7 +49,6 @@ function App() {
       console.error('electronAPI is not available');
     }
     localStorage.removeItem('pcap-analyzer-session-v1');
-    localStorage.removeItem('pcap-analyzer-cache-v2');
   }, []);
 
   const [analyses, setAnalyses] = useState<AnalysisSession[]>([]);
@@ -195,10 +194,10 @@ function App() {
           ...analysis,
           correlationJob: analysis.correlationJob
             ? {
-                ...analysis.correlationJob,
-                state: 'failed',
-                error: statusResult.error
-              }
+              ...analysis.correlationJob,
+              state: 'failed',
+              error: statusResult.error
+            }
             : null
         }));
         return;
@@ -215,10 +214,10 @@ function App() {
             ...analysis,
             correlationJob: analysis.correlationJob
               ? {
-                  ...analysis.correlationJob,
-                  state: 'failed',
-                  error: result.error
-                }
+                ...analysis.correlationJob,
+                state: 'failed',
+                error: result.error
+              }
               : null
           }));
           return;
@@ -405,13 +404,13 @@ function App() {
       ...analysis,
       correlationJob: analysis.correlationJob
         ? {
-            ...analysis.correlationJob,
-            state: 'cancelled',
-            progress: {
-              ...analysis.correlationJob.progress,
-              message: 'Korelacja anulowana przez uzytkownika.'
-            }
+          ...analysis.correlationJob,
+          state: 'cancelled',
+          progress: {
+            ...analysis.correlationJob.progress,
+            message: 'Korelacja anulowana przez uzytkownika.'
           }
+        }
         : null
     }));
   }, [activeAnalysis, patchAnalysis, stopCorrelationPolling]);

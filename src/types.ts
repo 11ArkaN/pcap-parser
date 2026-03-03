@@ -106,6 +106,7 @@ export interface CorrelationRequest {
     timeWindowMs?: number;
     maxCandidatesPerSession?: number;
     minScore?: number;
+    disableProcmonCache?: boolean;
   };
 }
 

@@ -1,0 +1,359 @@
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import fs from 'fs';
+import http from 'http';
+import https from 'https';
+import path from 'path';
+import { CorrelationJobManager } from './src/main/correlationJobManager';
+import { parsePcapDetailed } from './src/utils/pcapParser';
+let mainWindow = null;
+const correlationJobs = new CorrelationJobManager();
+const DEFAULT_MAX_CONNECTIONS = 400_000;
+function makeRequest(options, maxRetries = 3) {
+    return new Promise((resolve, reject) => {
+        let attempt = 0;
+        const tryRequest = () => {
+            attempt += 1;
+            const client = options.protocol === 'http:' ? http : https;
+            const req = client.request(options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                res.on('end', () => resolve({ data, statusCode: res.statusCode ?? 0 }));
+            });
+            req.on('error', (error) => {
+                const message = error?.message ?? '';
+                const shouldRetry = attempt < maxRetries &&
+                    (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || message.includes('socket hang up'));
+                if (shouldRetry) {
+                    console.log(`[IPC] Retry ${attempt}/${maxRetries} dla ${options.hostname} po bledzie: ${message}`);
+                    setTimeout(tryRequest, 1000 * attempt);
+                    return;
+                }
+                reject(error);
+            });
+            req.on('timeout', () => {
+                req.destroy();
+                if (attempt < maxRetries) {
+                    console.log(`[IPC] Retry ${attempt}/${maxRetries} po timeout`);
+                    setTimeout(tryRequest, 1000 * attempt);
+                    return;
+                }
+                reject(new Error('Request timeout'));
+            });
+            req.end();
+        };
+        tryRequest();
+    });
+}
+function createWindow() {
+    const distDir = path.join(app.getAppPath(), 'dist');
+    mainWindow = new BrowserWindow({
+        width: 1600,
+        height: 1000,
+        minWidth: 1200,
+        minHeight: 700,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(distDir, 'preload.js')
+        },
+        title: 'Analizator PCAP',
+        show: false
+    });
+    mainWindow.loadFile(path.join(distDir, 'index.html'));
+    mainWindow.once('ready-to-show', () => {
+        mainWindow?.show();
+    });
+}
+app.whenReady().then(createWindow);
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+        correlationJobs.dispose();
+        app.quit();
+    }
+});
+app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+    }
+});
+app.on('before-quit', () => {
+    correlationJobs.dispose();
+});
+ipcMain.handle('open-file-dialog', async () => {
+    const targetWindow = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+    return dialog.showOpenDialog(targetWindow, {
+        properties: ['openFile'],
+        filters: [
+            { name: 'Pliki PCAP', extensions: ['pcap', 'pcapng', 'cap', 'dmp'] },
+            { name: 'Wszystkie pliki', extensions: ['*'] }
+        ]
+    });
+});
+ipcMain.handle('open-procmon-dialog', async () => {
+    const targetWindow = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+    return dialog.showOpenDialog(targetWindow, {
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+            { name: 'Pliki Process Monitor', extensions: ['pml'] },
+            { name: 'Wszystkie pliki', extensions: ['*'] }
+        ]
+    });
+});
+ipcMain.handle('read-file', async (_event, filePath) => {
+    try {
+        const buffer = fs.readFileSync(filePath);
+        return {
+            success: true,
+            buffer: Array.from(buffer),
+            fileName: path.basename(filePath)
+        };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { success: false, error: message };
+    }
+});
+ipcMain.handle('parse-file', async (_event, filePath, maxConnections = DEFAULT_MAX_CONNECTIONS) => {
+    try {
+        const fileStat = fs.statSync(filePath);
+        const raw = fs.readFileSync(filePath);
+        const { connections, truncated } = await parsePcapDetailed(raw, { maxConnections });
+        return {
+            success: true,
+            data: {
+                filePath,
+                fileName: path.basename(filePath),
+                fileSize: fileStat.size,
+                connections,
+                truncated
+            }
+        };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { success: false, error: message };
+    }
+});
+ipcMain.handle('lookup-ip', async (_event, ip) => {
+    console.log(`[IPC] lookup-ip wywolane dla: ${ip}`);
+    try {
+        const ripeOptions = {
+            protocol: 'https:',
+            hostname: 'stat.ripe.net',
+            path: `/data/whois/data.json?resource=${ip}`,
+            method: 'GET',
+            timeout: 15000,
+            headers: {
+                Accept: 'application/json',
+                'User-Agent': 'PCAP-Analyzer/1.0'
+            }
+        };
+        const { data: ripeData } = await makeRequest(ripeOptions, 3);
+        const json = JSON.parse(ripeData);
+        if (json.status === 'ok') {
+            let cidr = null;
+            let asn = null;
+            let isp = null;
+            let org = null;
+            let country = null;
+            let city = null;
+            let region = null;
+            if (json.data?.records) {
+                for (const recordSet of json.data.records) {
+                    for (const record of recordSet) {
+                        if (record.key === 'CIDR' || record.key === 'inetnum' || record.key === 'NetRange') {
+                            cidr = record.value;
+                        }
+                        else if (record.key === 'OrgName' || record.key === 'Organization' || record.key === 'org') {
+                            org = record.value;
+                        }
+                        else if (record.key === 'City') {
+                            city = record.value;
+                        }
+                        else if (record.key === 'StateProv' || record.key === 'region' || record.key === 'State') {
+                            region = record.value;
+                        }
+                        else if (record.key === 'Country') {
+                            country = record.value;
+                        }
+                        else if (record.key === 'netname' && !org) {
+                            org = record.value;
+                        }
+                    }
+                }
+            }
+            if (json.data?.irr_records) {
+                for (const irrSet of json.data.irr_records) {
+                    for (const record of irrSet) {
+                        if (record.key === 'origin') {
+                            asn = `AS${record.value}`;
+                        }
+                        else if (record.key === 'descr' && !isp) {
+                            isp = record.value;
+                        }
+                    }
+                }
+            }
+            const rdapCidr = await lookupRdapCidr(ip);
+            if (rdapCidr) {
+                cidr = rdapCidr;
+            }
+            if (!country || !city || !cidr || country === 'EU') {
+                const fallback = await lookupIpApi(ip);
+                if (fallback.success) {
+                    if (!country || country === 'EU') {
+                        country = fallback.country;
+                    }
+                    if (!city) {
+                        city = fallback.city;
+                    }
+                    if (!region) {
+                        region = fallback.region;
+                    }
+                    if (!isp) {
+                        isp = fallback.isp;
+                    }
+                    if (!org) {
+                        org = fallback.org;
+                    }
+                    if (!asn) {
+                        asn = fallback.asn;
+                    }
+                }
+            }
+            return {
+                success: true,
+                data: {
+                    ip,
+                    asn,
+                    isp: isp || org,
+                    org,
+                    country,
+                    countryName: null,
+                    city,
+                    region,
+                    cidr,
+                    latitude: null,
+                    longitude: null,
+                    timezone: null
+                }
+            };
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[IPC] RIPE API error dla ${ip}:`, message);
+    }
+    const fallback = await lookupIpApi(ip);
+    if (fallback.success) {
+        const rdapCidr = await lookupRdapCidr(ip);
+        return { success: true, data: { ...fallback, cidr: rdapCidr || null } };
+    }
+    return { success: false, error: 'All APIs failed' };
+});
+ipcMain.handle('start-correlation', async (_event, request) => {
+    const started = correlationJobs.startJob(request);
+    if (!started.success) {
+        return { success: false, error: started.error };
+    }
+    return { success: true, jobId: started.jobId };
+});
+ipcMain.handle('get-correlation-status', async (_event, jobId) => {
+    const status = correlationJobs.getStatus(jobId);
+    if (!status) {
+        return { success: false, error: 'Nie znaleziono zadania korelacji.' };
+    }
+    return { success: true, status };
+});
+ipcMain.handle('cancel-correlation', async (_event, jobId) => {
+    return correlationJobs.cancelJob(jobId);
+});
+ipcMain.handle('get-correlation-result', async (_event, jobId) => {
+    const result = correlationJobs.getResult(jobId);
+    if (!result) {
+        return { success: false, error: 'Raport korelacji nie jest jeszcze dostepny.' };
+    }
+    return { success: true, data: result };
+});
+async function lookupRdapCidr(ip) {
+    try {
+        const options = {
+            protocol: 'https:',
+            hostname: 'rdap.org',
+            path: `/ip/${encodeURIComponent(ip)}`,
+            method: 'GET',
+            timeout: 12000,
+            headers: {
+                Accept: 'application/json',
+                'User-Agent': 'PCAP-Analyzer/1.0'
+            }
+        };
+        const { data, statusCode } = await makeRequest(options, 2);
+        if (statusCode < 200 || statusCode >= 300) {
+            return null;
+        }
+        const json = JSON.parse(data);
+        const cidrBlocks = Array.isArray(json.cidr0_cidrs) ? json.cidr0_cidrs : [];
+        const cidrs = cidrBlocks
+            .map((block) => {
+            const prefix = block.v4prefix || block.v6prefix;
+            const length = block.length;
+            if (!prefix || length === undefined || length === null) {
+                return null;
+            }
+            return `${prefix}/${length}`;
+        })
+            .filter((item) => Boolean(item));
+        return cidrs.length ? cidrs.join(', ') : null;
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[IPC] RDAP CIDR error dla ${ip}:`, message);
+        return null;
+    }
+}
+function lookupIpApi(ip) {
+    return new Promise((resolve) => {
+        const options = {
+            protocol: 'http:',
+            hostname: 'ip-api.com',
+            path: `/json/${ip}?fields=status,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,query`,
+            method: 'GET',
+            timeout: 10000,
+            headers: {
+                'User-Agent': 'PCAP-Analyzer/1.0'
+            }
+        };
+        makeRequest(options, 2)
+            .then(({ data }) => {
+            const json = JSON.parse(data);
+            if (json.status === 'success') {
+                resolve({
+                    success: true,
+                    ip,
+                    country: json.countryCode ?? null,
+                    countryName: json.country ?? null,
+                    region: json.regionName ?? null,
+                    city: json.city ?? null,
+                    isp: json.isp ?? null,
+                    org: json.org ?? null,
+                    asn: json.as ?? null,
+                    asname: json.asname ?? null,
+                    cidr: null,
+                    latitude: null,
+                    longitude: null,
+                    timezone: null
+                });
+            }
+            else {
+                resolve({ success: false, error: json.message || 'API error' });
+            }
+        })
+            .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            resolve({ success: false, error: message });
+        });
+    });
+}

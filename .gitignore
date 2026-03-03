@@ -28,3 +28,4 @@ release/
 .cache/
 sidecar/__pycache__/*
 vendor/*
+tmp/

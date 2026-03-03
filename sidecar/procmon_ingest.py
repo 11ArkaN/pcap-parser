@@ -56,7 +56,7 @@ SERVICE_PORTS = {
     "pop3s": 995,
 }
 
-PROC_MON_CACHE_VERSION = "v2"
+PROC_MON_CACHE_VERSION = "v9"
 BATCH_SIZE = 5000
 PROCMON_DB_COLUMNS: Tuple[str, ...] = (
     "event_id",
@@ -94,6 +94,7 @@ def ingest_procmon_to_sqlite(
     procmon_executable: str,
     conn: sqlite3.Connection,
     output_dir: str,
+    disable_cache: bool,
     on_progress: ProgressCallback,
 ) -> Dict[str, object]:
     warnings: List[str] = []
@@ -124,7 +125,7 @@ def ingest_procmon_to_sqlite(
         export_messages: List[str] = []
         used_cache = False
 
-        if cache_path.exists():
+        if (not disable_cache) and cache_path.exists():
             inserted_from_cache = load_cached_events_to_db(
                 conn=conn,
                 cache_path=cache_path,
@@ -191,7 +192,7 @@ def ingest_procmon_to_sqlite(
             else:
                 export_messages.append(f"XML export failed: {xml_details}")
 
-        if inserted_for_file > 0 and not used_cache:
+        if inserted_for_file > 0 and not used_cache and not disable_cache:
             try:
                 cached_count = write_source_events_cache(conn, source_pml_path=pml_path, cache_path=cache_path)
                 if cached_count <= 0:
@@ -824,9 +825,6 @@ def record_to_db_row(
     event_id: str,
     source_pml_path: str,
 ) -> Optional[Tuple[object, ...]]:
-    if not is_network_record(record):
-        return None
-
     ts_us = extract_timestamp(record, base_date)
     if ts_us is None:
         return None
@@ -848,6 +846,9 @@ def record_to_db_row(
     tid = parse_int(value_of(record, "tid"))
     proto = operation_to_proto(operation)
     local_ip, local_port, remote_ip, remote_port, direction = extract_endpoints(operation, path, detail)
+
+    if not is_network_record(record) and remote_ip is None and local_ip is None:
+        return None
 
     if remote_ip is None and local_ip is None:
         return None
@@ -989,6 +990,13 @@ def extract_endpoints(
 
     left = endpoints[0]
     right = endpoints[1]
+
+    # For Procmon path format "local -> remote", arrow order is authoritative.
+    if "->" in text:
+        local_ip, local_port = left
+        remote_ip, remote_port = right
+        return local_ip, local_port, remote_ip, remote_port, direction
+
     left_private = is_private_ip(left[0])
     right_private = is_private_ip(right[0])
 
@@ -1001,10 +1009,6 @@ def extract_endpoints(
     else:
         local_ip, local_port = left
         remote_ip, remote_port = right
-
-    if direction == "inbound":
-        local_ip, remote_ip = remote_ip, local_ip
-        local_port, remote_port = remote_port, local_port
 
     return local_ip, local_port, remote_ip, remote_port, direction
 
@@ -1063,6 +1067,14 @@ def parse_endpoint_token(token: str) -> Optional[Tuple[str, int]]:
     if not value or ":" not in value:
         return None
 
+    # Procmon frequently appends extra metadata after endpoint (e.g. "length: 44, ...").
+    # Keep only the first endpoint fragment.
+    for sep in (" ", ",", ";", "\t"):
+        if sep in value:
+            value = value.split(sep, 1)[0].strip()
+    if not value or ":" not in value:
+        return None
+
     host_part, port_part = value.rsplit(":", 1)
     host = host_part.strip().strip("[]")
     if not host:
@@ -1078,8 +1090,99 @@ def parse_endpoint_token(token: str) -> Optional[Tuple[str, int]]:
     if normalized:
         return normalized, port
 
+    prefixed_ipv4 = extract_prefixed_hostname_ipv4(host)
+    if prefixed_ipv4:
+        return prefixed_ipv4, port
+
+    embedded_ipv4 = extract_embedded_ipv4(host)
+    if embedded_ipv4:
+        return embedded_ipv4, port
+    embedded_dash_ipv4 = extract_embedded_dash_ipv4(host)
+    if embedded_dash_ipv4:
+        return embedded_dash_ipv4, port
+    embedded_dash_ipv6 = extract_embedded_dash_ipv6(host)
+    if embedded_dash_ipv6:
+        return embedded_dash_ipv6, port
+
     # Keep hostname if IP parsing failed; allows limited matching where hostname appears in both sources.
     return host.lower(), port
+
+
+def extract_prefixed_hostname_ipv4(host: str) -> Optional[str]:
+    # PTR-style hostnames often encode IPv4 as first four dotted labels in reverse order:
+    # "172.52.117.34.bc.googleusercontent.com" -> 34.117.52.172
+    labels = [label for label in host.split(".") if label]
+    if len(labels) < 5:
+        return None
+    if not all(label.isdigit() for label in labels[:4]):
+        return None
+
+    octets = [int(label) for label in labels[:4]]
+    if any(octet > 255 for octet in octets):
+        return None
+
+    reversed_candidate = ".".join(str(octet) for octet in reversed(octets))
+    normalized = normalize_ip(reversed_candidate)
+    if normalized:
+        return normalized
+
+    direct_candidate = ".".join(str(octet) for octet in octets)
+    return normalize_ip(direct_candidate)
+
+
+def extract_embedded_ipv4(host: str) -> Optional[str]:
+    match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", host)
+    if not match:
+        return None
+    return normalize_ip(match.group(1))
+
+
+def extract_embedded_dash_ipv4(host: str) -> Optional[str]:
+    # e.g. ec2-13-61-195-236.eu-north-1.compute.amazonaws.com or a23-48-23-20.deploy...
+    for label in host.split("."):
+        number_parts = [int(item) for item in re.findall(r"\d+", label)]
+        if len(number_parts) < 4:
+            continue
+        selected = number_parts[-4:]
+        if any(part > 255 for part in selected):
+            continue
+        candidate = ".".join(str(part) for part in selected)
+        normalized = normalize_ip(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
+def extract_embedded_dash_ipv6(host: str) -> Optional[str]:
+    # e.g. g2a02-26f0-00e2-0000-0000-0000-687b-4490.deploy.static...
+    for label in host.split("."):
+        raw_parts = label.split("-")
+        if len(raw_parts) < 8:
+            continue
+
+        cleaned_parts: List[str] = []
+        for idx, part in enumerate(raw_parts):
+            candidate = part
+            if idx == 0:
+                candidate = re.sub(r"^[^0-9a-fA-F]+", "", candidate)
+            if not candidate:
+                cleaned_parts.append("")
+                continue
+            if len(candidate) > 4:
+                candidate = candidate[-4:]
+            cleaned_parts.append(candidate)
+
+        for start in range(0, max(1, len(cleaned_parts) - 7)):
+            window = cleaned_parts[start : start + 8]
+            if len(window) < 8:
+                break
+            if not all(1 <= len(group) <= 4 and re.fullmatch(r"[0-9a-fA-F]{1,4}", group) for group in window):
+                continue
+            candidate = ":".join(window)
+            normalized = normalize_ip(candidate)
+            if normalized and ":" in normalized:
+                return normalized
+    return None
 
 
 def infer_direction(operation: Optional[str]) -> str:
