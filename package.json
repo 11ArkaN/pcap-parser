@@ -2,13 +2,16 @@
   "name": "pcap-analyzer",
   "version": "1.0.0",
   "description": "Aplikacja do analizy plikow PCAP z Wiresharka",
-  "main": "main.js",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "bun run build && electron .",
     "dev": "bun run build && electron .",
-    "build": "bun build ./src/index.js --outdir ./dist --target browser && copy src\\styles.css dist\\styles.css 2>nul || cp src/styles.css dist/styles.css",
-    "build:dev": "bun build ./src/index.js --outdir ./dist --target browser --watch",
-    "test": "bun test-parser.js"
+    "build:main": "bun build ./main.ts --outfile ./dist/main.js --target node --format cjs --external electron && bun build ./preload.ts --outfile ./dist/preload.js --target node --format cjs --external electron",
+    "build:renderer": "bun build ./src/index.tsx --outdir ./dist --target browser",
+    "copy:styles": "node -e \"require('fs').copyFileSync('src/styles.css', 'dist/styles.css')\"",
+    "build": "bun run build:main && bun run build:renderer && bun run copy:styles",
+    "test": "bun test",
+    "test:captures": "bun test tests/captures-table-data.test.ts"
   },
   "dependencies": {
     "react": "^18.2.0",

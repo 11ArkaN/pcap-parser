@@ -1,109 +1,83 @@
-# PCAP Analyzer
+﻿# PCAP Analyzer
 
-Nowoczesna aplikacja desktopowa do analizy plikow PCAP/PCAPNG z Wiresharka.
+Desktop app for analyzing PCAP/PCAPNG files from Wireshark.
 
-## Funkcjonalnosci
+## Features
 
-- Parsowanie plikow .pcap, .pcapng, .cap
-- Ekstrakcja adresow IP (publiczne i lokalne)
-- Pobieranie danych WHOIS/ASN z API ipwho.is
-- Geolokalizacja IP (kraj, miasto)
-- Identyfikacja ISP i organizacji
-- Grupowanie po ASN i CIDR
-- Wizualizacja danych (wykresy)
-- Eksport do CSV, JSON, Excel
-- Cache danych WHOIS (24h)
+- Parsing `.pcap`, `.pcapng`, `.cap`
+- Extracting public and local IP addresses
+- WHOIS/ASN enrichment via Electron IPC (RIPE + RDAP + ip-api fallback)
+- Geolocation (country/city)
+- ISP/organization identification
+- Grouping by ASN and CIDR
+- Charts and tabular analytics
+- Export to CSV, JSON, Excel
+- Local cache for WHOIS lookups (24h)
 
-## Wymagania
+## Requirements
 
-- [Bun](https://bun.sh/) - srodowisko uruchomieniowe JavaScript
+- [Bun](https://bun.sh/)
 - Windows/macOS/Linux
 
-## Instalacja
+## Install
 
 ```bash
-# Zainstaluj zaleznosci
 bun install
+```
 
-# Zbuduj aplikacje
+## Build
+
+```bash
 bun run build
 ```
 
-## Uruchomienie
+## Run
 
 ```bash
-# Tryb deweloperski
+# Development
 bun run dev
 
-# Lub produkcyjny
+# Production
 bun run start
 ```
 
-## Uzycie
+## Tests
 
-1. Uruchom aplikacje
-2. Przeciagnij plik PCAP na obszar "Drop zone" lub kliknij "browse"
-3. Poczekaj na parsowanie i pobranie danych WHOIS
-4. Przegladaj dane w zakladkach:
-   - **Public IPs** - adresy publiczne z danymi WHOIS
-   - **Local Network** - adresy lokalne (192.168.x.x, 10.x.x.x)
-5. Eksportuj dane do CSV, JSON lub Excel
-
-## Testowanie
-
-W folderze `captures/` znajduje sie plik testowy `Wifi.pcapng`.
+Regression tests are based on files in `captures/` and validate table data outputs.
 
 ```bash
-# Test parsera
-bun test-parser.js
+# All tests
+bun test
+
+# Capture/table regression tests only
+bun run test:captures
 ```
 
-## Struktura projektu
+## Project Structure
 
-```
+```text
 pcap-analyzer/
-├── main.js              # Proces glowny Electron
-├── preload.js           # Bridge Electron <-> React
-├── src/
-│   ├── App.jsx          # Glowny komponent
-│   ├── index.js         # Entry point React
-│   ├── styles.css       # Style CSS
-│   ├── components/      # Komponenty React
-│   │   ├── DropZone.jsx
-│   │   ├── DataTable.jsx
-│   │   ├── Charts.jsx
-│   │   └── LoadingOverlay.jsx
-│   └── utils/           # Narzedzia
-│       ├── pcapParser.js
-│       └── whoisApi.js
-├── captures/            # Pliki testowe
-└── dist/                # Zbudowane pliki
+|- main.ts
+|- preload.ts
+|- src/
+|  |- App.tsx
+|  |- index.tsx
+|  |- styles.css
+|  |- types.ts
+|  |- components/
+|  |  |- DropZone.tsx
+|  |  |- DataTable.tsx
+|  |  |- Charts.tsx
+|  |  |- LoadingOverlay.tsx
+|  |- utils/
+|     |- pcapParser.ts
+|     |- whoisApi.ts
+|- tests/
+|  |- captures-table-data.test.ts
+|- captures/
+|- dist/
 ```
 
-## Technologie
-
-- Electron - framework desktopowy
-- React - biblioteka UI
-- Recharts - wykresy
-- ipwho.is API - dane WHOIS (darmowe)
-- XLSX - eksport Excel
-- PapaParse - eksport CSV
-
-## Wdrozenie
-
-### Windows
-```bash
-bun run build
-# Pliki w dist/
-```
-
-### Tworzenie instalatora
-```bash
-# Wymaga electron-builder
-bun add -d electron-builder
-bun run dist
-```
-
-## Licencja
+## License
 
 MIT

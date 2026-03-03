@@ -1,68 +1,86 @@
-import React, { useMemo } from 'react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell
+﻿import React, { useMemo } from 'react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
 } from 'recharts';
+import type { IpLookupData, ParsedConnection } from '../types';
 
-function Charts({ connections, ipData }) {
-  const countryData = useMemo(() => {
-    const counts = {};
-    connections.forEach(conn => {
+interface ChartsProps {
+  connections: ParsedConnection[];
+  ipData: Record<string, IpLookupData>;
+}
+
+interface ChartDatum {
+  name: string;
+  value: number;
+}
+
+function Charts({ connections, ipData }: ChartsProps) {
+  const countryData = useMemo<ChartDatum[]>(() => {
+    const counts: Record<string, number> = {};
+    connections.forEach((conn) => {
       const ip = isPublicIp(conn.dst) ? conn.dst : conn.src;
       const info = ipData[ip];
       if (info?.country) {
         counts[info.country] = (counts[info.country] || 0) + 1;
       }
     });
-    
+
     return Object.entries(counts)
       .map(([country, count]) => ({ name: country, value: count }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 10);
   }, [connections, ipData]);
 
-  const asnData = useMemo(() => {
-    const counts = {};
-    connections.forEach(conn => {
+  const asnData = useMemo<ChartDatum[]>(() => {
+    const counts: Record<string, number> = {};
+    connections.forEach((conn) => {
       const ip = isPublicIp(conn.dst) ? conn.dst : conn.src;
       const info = ipData[ip];
       if (info?.asn) {
         counts[info.asn] = (counts[info.asn] || 0) + 1;
       }
     });
-    
+
     return Object.entries(counts)
       .map(([asn, count]) => ({ name: asn.substring(0, 30), value: count }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 10);
   }, [connections, ipData]);
 
-  const portData = useMemo(() => {
-    const counts = {};
-    connections.forEach(conn => {
+  const portData = useMemo<ChartDatum[]>(() => {
+    const counts: Record<string, number> = {};
+    connections.forEach((conn) => {
       if (conn.dstPort) {
         const service = getServiceName(conn.dstPort);
         counts[service] = (counts[service] || 0) + 1;
       }
     });
-    
+
     return Object.entries(counts)
       .map(([service, count]) => ({ name: service, value: count }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 10);
   }, [connections]);
 
-  const protocolData = useMemo(() => {
-    const counts = {};
-    connections.forEach(conn => {
+  const protocolData = useMemo<ChartDatum[]>(() => {
+    const counts: Record<string, number> = {};
+    connections.forEach((conn) => {
       counts[conn.protocol] = (counts[conn.protocol] || 0) + 1;
     });
-    
-    return Object.entries(counts)
-      .map(([protocol, count]) => ({ name: protocol, value: count }));
+
+    return Object.entries(counts).map(([protocol, count]) => ({ name: protocol, value: count }));
   }, [connections]);
 
-  const COLORS = ['#e2a039', '#60a5fa', '#34d399', '#fb923c', '#a78bfa', '#f43f5e', '#38bdf8', '#fb7185'];
+  const colors = ['#e2a039', '#60a5fa', '#34d399', '#fb923c', '#a78bfa', '#f43f5e', '#38bdf8', '#fb7185'];
 
   const chartTooltipStyle = {
     backgroundColor: 'rgba(12, 14, 20, 0.95)',
@@ -85,18 +103,15 @@ function Charts({ connections, ipData }) {
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={countryData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis 
-                dataKey="name" 
+              <XAxis
+                dataKey="name"
                 stroke="none"
                 tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 11, fontFamily: 'Sora' }}
                 angle={-45}
                 textAnchor="end"
                 height={60}
               />
-              <YAxis 
-                stroke="none"
-                tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }}
-              />
+              <YAxis stroke="none" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }} />
               <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(226, 160, 57, 0.06)' }} />
               <defs>
                 <linearGradient id="grad-amber" x1="0" y1="0" x2="0" y2="1">
@@ -114,8 +129,8 @@ function Charts({ connections, ipData }) {
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={asnData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis 
-                dataKey="name" 
+              <XAxis
+                dataKey="name"
                 stroke="none"
                 tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 9, fontFamily: 'Sora' }}
                 angle={-45}
@@ -123,10 +138,7 @@ function Charts({ connections, ipData }) {
                 height={80}
                 interval={0}
               />
-              <YAxis 
-                stroke="none"
-                tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }}
-              />
+              <YAxis stroke="none" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }} />
               <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(167, 139, 250, 0.06)' }} />
               <defs>
                 <linearGradient id="grad-violet" x1="0" y1="0" x2="0" y2="1">
@@ -144,18 +156,15 @@ function Charts({ connections, ipData }) {
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={portData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis 
-                dataKey="name" 
+              <XAxis
+                dataKey="name"
                 stroke="none"
                 tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 11, fontFamily: 'Sora' }}
                 angle={-45}
                 textAnchor="end"
                 height={60}
               />
-              <YAxis 
-                stroke="none"
-                tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }}
-              />
+              <YAxis stroke="none" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }} />
               <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(52, 211, 153, 0.06)' }} />
               <defs>
                 <linearGradient id="grad-emerald" x1="0" y1="0" x2="0" y2="1">
@@ -177,18 +186,15 @@ function Charts({ connections, ipData }) {
                 cx="50%"
                 cy="50%"
                 labelLine={false}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }: { name: string; percent?: number }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
                 outerRadius={80}
                 innerRadius={40}
                 fill="#8884d8"
                 dataKey="value"
                 strokeWidth={0}
               >
-                {protocolData.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    fill={COLORS[index % COLORS.length]}
-                  />
+                {protocolData.map((_entry, index) => (
+                  <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
                 ))}
               </Pie>
               <Tooltip contentStyle={chartTooltipStyle} />
@@ -200,7 +206,7 @@ function Charts({ connections, ipData }) {
   );
 }
 
-function isPublicIp(ip) {
+function isPublicIp(ip: string): boolean {
   if (!ip || ip === '0.0.0.0' || ip === '255.255.255.255') return false;
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4) return false;
@@ -213,13 +219,27 @@ function isPublicIp(ip) {
   return true;
 }
 
-function getServiceName(port) {
-  const services = {
-    20: 'FTP-Data', 21: 'FTP', 22: 'SSH', 23: 'Telnet',
-    25: 'SMTP', 53: 'DNS', 80: 'HTTP', 110: 'POP3',
-    143: 'IMAP', 443: 'HTTPS', 465: 'SMTPS', 587: 'SMTP',
-    993: 'IMAPS', 995: 'POP3S', 3306: 'MySQL', 3389: 'RDP',
-    5432: 'PostgreSQL', 8080: 'HTTP-Alt', 8443: 'HTTPS-Alt'
+function getServiceName(port: number): string {
+  const services: Record<number, string> = {
+    20: 'FTP-Data',
+    21: 'FTP',
+    22: 'SSH',
+    23: 'Telnet',
+    25: 'SMTP',
+    53: 'DNS',
+    80: 'HTTP',
+    110: 'POP3',
+    143: 'IMAP',
+    443: 'HTTPS',
+    465: 'SMTPS',
+    587: 'SMTP',
+    993: 'IMAPS',
+    995: 'POP3S',
+    3306: 'MySQL',
+    3389: 'RDP',
+    5432: 'PostgreSQL',
+    8080: 'HTTP-Alt',
+    8443: 'HTTPS-Alt'
   };
   return services[port] || `Port-${port}`;
 }

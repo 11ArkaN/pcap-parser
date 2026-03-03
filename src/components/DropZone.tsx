@@ -1,35 +1,57 @@
-import React, { useState, useCallback } from 'react';
+﻿import React, { useCallback, useState } from 'react';
 
-function DropZone({ onFileDrop, error }) {
+interface DropZoneProps {
+  onFileDrop: (buffer: Uint8Array, fileName: string) => Promise<void> | void;
+  error: string | null;
+}
+
+function DropZone({ onFileDrop, error }: DropZoneProps) {
   const [isDragActive, setIsDragActive] = useState(false);
 
-  const handleDragEnter = useCallback((e) => {
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragActive(true);
   }, []);
 
-  const handleDragLeave = useCallback((e) => {
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragActive(false);
   }, []);
 
-  const handleDragOver = useCallback((e) => {
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
   }, []);
 
-  const handleDrop = useCallback(async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragActive(false);
+  const processFile = useCallback(
+    async (file: File) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const arrayBuffer = event.target?.result;
+        if (arrayBuffer instanceof ArrayBuffer) {
+          void onFileDrop(new Uint8Array(arrayBuffer), file.name);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    },
+    [onFileDrop]
+  );
 
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      await processFile(files[0]);
-    }
-  }, []);
+  const handleDrop = useCallback(
+    async (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragActive(false);
+
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        await processFile(files[0]);
+      }
+    },
+    [processFile]
+  );
 
   const handleClick = useCallback(async () => {
     try {
@@ -37,22 +59,13 @@ function DropZone({ onFileDrop, error }) {
       if (result.filePaths && result.filePaths.length > 0) {
         const fileResult = await window.electronAPI.readFile(result.filePaths[0]);
         if (fileResult.success) {
-          onFileDrop(new Uint8Array(fileResult.buffer), fileResult.fileName);
+          await onFileDrop(new Uint8Array(fileResult.buffer), fileResult.fileName);
         }
       }
     } catch (err) {
       console.error('Blad otwierania pliku:', err);
     }
   }, [onFileDrop]);
-
-  const processFile = async (file) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const arrayBuffer = e.target.result;
-      onFileDrop(new Uint8Array(arrayBuffer), file.name);
-    };
-    reader.readAsArrayBuffer(file);
-  };
 
   return (
     <div
@@ -73,9 +86,7 @@ function DropZone({ onFileDrop, error }) {
       <h2>Upusc plik PCAP lub kliknij aby przegladac</h2>
       <p>Obsluguje pliki .pcap, .pcapng, .cap z Wiresharka</p>
       <div className="hint">captures/Wifi.pcapng</div>
-      {error && (
-        <p className="error-msg">Blad: {error}</p>
-      )}
+      {error && <p className="error-msg">Blad: {error}</p>}
     </div>
   );
 }
