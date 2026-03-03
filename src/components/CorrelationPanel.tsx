@@ -1,6 +1,14 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { summarizeCorrelation } from '../utils/correlationSummary';
-import type { CorrelationJobStatus, CorrelationMatch, CorrelationReportV1, IpLookupData, ProcmonAttachment } from '../types';
+import type {
+  CorrelationJobStatus,
+  CorrelationMatch,
+  CorrelationReportV1,
+  CorrelationUnmatchedProcmonEvent,
+  CorrelationUnmatchedSession,
+  IpLookupData,
+  ProcmonAttachment
+} from '../types';
 
 interface CorrelationPanelProps {
   pcapFilePath?: string;
@@ -30,58 +38,50 @@ function CorrelationPanel({
   onCancelCorrelation
 }: CorrelationPanelProps) {
   const [activeTab, setActiveTab] = useState<'results' | 'debug'>('results');
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const [activeResultsView, setActiveResultsView] = useState<'matches' | 'unmatched_sessions' | 'unmatched_events'>('matches');
   const debugListRef = useRef<HTMLDivElement | null>(null);
 
   const summary = useMemo(() => (correlationResult ? summarizeCorrelation(correlationResult) : null), [correlationResult]);
   const isRunning = correlationJob?.state === 'queued' || correlationJob?.state === 'running';
   const canRun = Boolean(pcapFilePath && procmonFiles.length > 0 && !isRunning);
   const debugEntries = correlationJob?.debugEntries ?? [];
-
-  const topMatches = useMemo(() => {
-    if (!correlationResult) return [];
-    return [...correlationResult.matches].sort((a, b) => b.score - a.score).slice(0, 200);
-  }, [correlationResult]);
+  const topMatches = useMemo(() => (correlationResult ? [...correlationResult.matches].sort((a, b) => b.score - a.score).slice(0, 200) : []), [correlationResult]);
+  const topUnmatchedSessions = useMemo(
+    () => (correlationResult ? [...correlationResult.unmatchedSessions].sort((a, b) => b.packets - a.packets).slice(0, 200) : []),
+    [correlationResult]
+  );
+  const topUnmatchedEvents = useMemo(
+    () => (correlationResult ? [...correlationResult.unmatchedProcmonEvents].sort((a, b) => b.tsUs - a.tsUs).slice(0, 200) : []),
+    [correlationResult]
+  );
 
   const missingIps = useMemo(() => {
-    if (!topMatches.length) return [];
-    const pending = new Set<string>();
-    for (const match of topMatches) {
-      const candidates = listPublicIpCandidates(match);
-      for (const candidate of candidates) {
-        if (!lookupIpInfo(ipData, candidate)) {
-          pending.add(candidate);
-        }
+    if (!correlationResult) return [];
+    const set = new Set<string>();
+    for (const row of [...topMatches, ...topUnmatchedSessions, ...topUnmatchedEvents]) {
+      for (const ip of listPublicIpCandidatesGeneric(row)) {
+        if (!lookupIpInfo(ipData, ip)) set.add(ip);
       }
     }
-    return Array.from(pending).slice(0, 150);
-  }, [topMatches, ipData]);
-
-  const progress = correlationJob ? overallProgressPercent(correlationJob) : 0;
-
-  useEffect(() => {
-    if (correlationResult) {
-      setActiveTab('results');
-    }
-  }, [correlationResult]);
+    return Array.from(set).slice(0, 150);
+  }, [correlationResult, topMatches, topUnmatchedSessions, topUnmatchedEvents, ipData]);
 
   useEffect(() => {
     if (!debugListRef.current || activeTab !== 'debug') return;
     debugListRef.current.scrollTop = debugListRef.current.scrollHeight;
-  }, [debugEntries, activeTab]);
+  }, [activeTab, debugEntries]);
 
   useEffect(() => {
-    setExpandedRows({});
-  }, [correlationResult?.generatedAt]);
+    if (correlationResult) {
+      setActiveTab('results');
+      setActiveResultsView('matches');
+    }
+  }, [correlationResult]);
 
   useEffect(() => {
     if (!onEnsureIpMetadata || missingIps.length === 0) return;
     onEnsureIpMetadata(missingIps);
   }, [missingIps, onEnsureIpMetadata]);
-
-  const toggleExpanded = (rowKey: string) => {
-    setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }));
-  };
 
   return (
     <section className="correlation-panel fade-in">
@@ -132,7 +132,7 @@ function CorrelationPanel({
             {isRunning && <span className="correlation-live-dot" aria-hidden="true" />}
           </div>
           <div className="progress-bar" style={{ marginTop: '0.5rem' }}>
-            <div className="progress-fill" style={{ width: `${progress}%` }} />
+            <div className="progress-fill" style={{ width: `${overallProgressPercent(correlationJob)}%` }} />
           </div>
           {isRunning && (
             <p className="correlation-running-hint">
@@ -160,12 +160,30 @@ function CorrelationPanel({
           {summary && correlationResult ? (
             <div className="correlation-result">
               <div className="correlation-summary-grid">
-                <SummaryBox label="Dopasowane sesje" value={summary.totalMatches.toLocaleString()} accent="bright" />
+                <SummaryBox
+                  label="Dopasowane sesje"
+                  value={summary.totalMatches.toLocaleString()}
+                  accent="bright"
+                  active={activeResultsView === 'matches'}
+                  onClick={() => setActiveResultsView('matches')}
+                />
                 <SummaryBox label="Wysoka pewnosc" value={summary.highConfidence.toLocaleString()} accent="emerald" />
                 <SummaryBox label="Srednia pewnosc" value={summary.mediumConfidence.toLocaleString()} accent="amber" />
                 <SummaryBox label="Niska pewnosc" value={summary.lowConfidence.toLocaleString()} accent="orange" />
-                <SummaryBox label="Niedopasowane sesje" value={summary.unmatchedSessions.toLocaleString()} accent="muted" />
-                <SummaryBox label="Niedopasowane eventy" value={summary.unmatchedEvents.toLocaleString()} accent="muted" />
+                <SummaryBox
+                  label="Niedopasowane sesje"
+                  value={summary.unmatchedSessions.toLocaleString()}
+                  accent="muted"
+                  active={activeResultsView === 'unmatched_sessions'}
+                  onClick={() => setActiveResultsView('unmatched_sessions')}
+                />
+                <SummaryBox
+                  label="Niedopasowane eventy"
+                  value={summary.unmatchedEvents.toLocaleString()}
+                  accent="muted"
+                  active={activeResultsView === 'unmatched_events'}
+                  onClick={() => setActiveResultsView('unmatched_events')}
+                />
               </div>
 
               <div className="correlation-diagnostics">
@@ -175,116 +193,32 @@ function CorrelationPanel({
                 <span>
                   Tryb: <strong>{parserModeLabel(correlationResult.diagnostics.parserMode)}</strong>
                 </span>
+                <span>
+                  Widok: <strong>{resultsViewLabel(activeResultsView)}</strong>
+                </span>
               </div>
 
-              {/* Results cards */}
               <div className="corr-cards">
-                {topMatches.map((match) => {
-                  const rowKey = `${match.sessionId}:${match.eventId}`;
-                  const expanded = Boolean(expandedRows[rowKey]);
-                  const { ip: publicIp, info } = resolveDisplayIp(match, ipData);
-
-                  return (
-                    <div key={rowKey} className={`corr-card ${expanded ? 'expanded' : ''}`}>
-                      {/* Row 1: Process + Confidence + Toggle */}
-                      <div className="corr-card-header">
-                        <div className="corr-card-process">
-                          <strong>{match.processName || '—'}</strong>
-                          <span className="corr-card-pid">PID {match.pid ?? '—'}</span>
-                        </div>
-                        <div className="corr-card-header-right">
-                          <span className={`confidence-badge confidence-${match.confidence}`}>
-                            {confidenceLabel(match.confidence)}
-                          </span>
-                          <button className="corr-card-toggle" onClick={() => toggleExpanded(rowKey)}>
-                            {expanded ? '▾' : '▸'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Row 2: Key data fields */}
-                      <div className="corr-card-fields">
-                        <div className="corr-field">
-                          <span className="corr-field-label">IP</span>
-                          {publicIp ? (
-                            <button
-                              className="ip-address ip-address-button"
-                              onClick={() => onGoToPcapIp?.(publicIp)}
-                              title={`Przejdz do ${publicIp} w widoku PCAP`}
-                            >
-                              {publicIp}
-                            </button>
-                          ) : (
-                            <span className="corr-field-empty">—</span>
-                          )}
-                        </div>
-                        <div className="corr-field">
-                          <span className="corr-field-label">ASN</span>
-                          {info?.asn ? <span className="asn-badge">{info.asn}</span> : <span className="corr-field-empty">—</span>}
-                        </div>
-                        <div className="corr-field">
-                          <span className="corr-field-label">ISP</span>
-                          <span className="corr-field-value">{info?.isp || info?.org || '—'}</span>
-                        </div>
-                        <div className="corr-field">
-                          <span className="corr-field-label">Lokalizacja</span>
-                          {info?.country ? (
-                            <div className="country-flag">
-                              <span className="flag">{getFlagEmoji(info.country)}</span>
-                              <span className="country-name">{info.country}{info.city ? `, ${info.city}` : ''}</span>
-                            </div>
-                          ) : <span className="corr-field-empty">—</span>}
-                        </div>
-                        <div className="corr-field">
-                          <span className="corr-field-label">CIDR</span>
-                          <span className="cidr-block">{(info?.cidr as string) || (info?.range as string) || '—'}</span>
-                        </div>
-                      </div>
-
-                      {/* Row 3: Service + Traffic + Time */}
-                      <div className="corr-card-meta">
-                        <span className={`protocol-badge ${match.protocol.toLowerCase()}`}>{match.protocol}</span>
-                        <span className="corr-meta-item">{serviceLabel(match)}</span>
-                        <span className="corr-meta-sep">·</span>
-                        <span className="corr-meta-item corr-meta-mono">{match.packets.toLocaleString()} pkt</span>
-                        <span className="corr-meta-sep">·</span>
-                        <span className="corr-meta-item corr-meta-mono">{formatBytes(match.bytes)}</span>
-                        <span className="corr-meta-sep">·</span>
-                        <span className="corr-meta-item corr-meta-mono">{formatTimestampUs(match.firstSeenUs)}</span>
-                      </div>
-
-                      {/* Expandable detail panel */}
-                      {expanded && (
-                        <div className="corr-card-details">
-                          <DetailItem label="Sciezka procesu" value={match.processPath || '—'} />
-                          <DetailItem label="Linia polecen" value={match.commandLine || '—'} />
-                          <DetailItem label="Uzytkownik" value={match.userName || '—'} />
-                          <DetailItem label="Firma" value={match.company || '—'} />
-                          <DetailItem label="PID rodzica" value={formatOptionalNumber(match.parentPid)} />
-                          <DetailItem label="Integralnosc" value={match.integrityLevel || '—'} />
-                          <DetailItem label="Podpis" value={match.signer || '—'} />
-                          <DetailItem label="Hash" value={match.imageHash || '—'} mono />
-                          <DetailItem label="Operacja" value={match.operation || '—'} />
-                          <DetailItem label="Wynik" value={match.result || '—'} />
-                          <DetailItem
-                            label="Endpoint"
-                            value={`${match.eventLocalIp || '—'}:${match.eventLocalPort ?? '—'} → ${match.eventRemoteIp || '—'}:${match.eventRemotePort ?? '—'}`}
-                            mono
-                          />
-                          <DetailItem label="Kierunek" value={match.eventDirection || '—'} />
-                          <DetailItem label="Czas start" value={formatTimestampUs(match.firstSeenUs)} />
-                          <DetailItem label="Czas koniec" value={formatTimestampUs(match.lastSeenUs)} />
-                          <DetailItem label="Delta czasu" value={formatDurationUs(match.offsetUs)} />
-                          <DetailItem label="Powody" value={formatReasons(match)} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {activeResultsView === 'matches' && topMatches.map((row) => renderMatchCard(row, ipData, onGoToPcapIp))}
+                {activeResultsView === 'unmatched_sessions' &&
+                  topUnmatchedSessions.map((row) => renderUnmatchedSessionCard(row, ipData, onGoToPcapIp))}
+                {activeResultsView === 'unmatched_events' &&
+                  topUnmatchedEvents.map((row) => renderUnmatchedEventCard(row, ipData, onGoToPcapIp))}
               </div>
-              {topMatches.length === 0 && (
+
+              {activeResultsView === 'matches' && topMatches.length === 0 && (
                 <p className="correlation-muted" style={{ marginTop: '0.75rem' }}>
                   Brak dopasowan spelniajacych kryteria pewnosci.
+                </p>
+              )}
+              {activeResultsView === 'unmatched_sessions' && topUnmatchedSessions.length === 0 && (
+                <p className="correlation-muted" style={{ marginTop: '0.75rem' }}>
+                  Brak niedopasowanych sesji.
+                </p>
+              )}
+              {activeResultsView === 'unmatched_events' && topUnmatchedEvents.length === 0 && (
+                <p className="correlation-muted" style={{ marginTop: '0.75rem' }}>
+                  Brak niedopasowanych eventow.
                 </p>
               )}
             </div>
@@ -325,21 +259,170 @@ function CorrelationPanel({
   );
 }
 
-function SummaryBox({ label, value, accent = 'bright' }: { label: string; value: string; accent?: string }) {
+function renderMatchCard(match: CorrelationMatch, ipData: Record<string, IpLookupData>, onGoToPcapIp?: (ip: string) => void) {
+  const { ip: publicIp, info } = resolveDisplayIp(match, ipData);
   return (
-    <div className={`correlation-summary-box accent-${accent}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div key={`${match.sessionId}:${match.eventId}`} className="corr-card">
+      <div className="corr-card-header">
+        <div className="corr-card-process">
+          <strong>{match.processName || '-'}</strong>
+          <span className="corr-card-pid">PID {match.pid ?? '-'}</span>
+        </div>
+        <div className="corr-card-header-right">
+          <span className={`confidence-badge confidence-${match.confidence}`}>{confidenceLabel(match.confidence)}</span>
+        </div>
+      </div>
+      <div className="corr-card-fields">
+        <div className="corr-field">
+          <span className="corr-field-label">IP</span>
+          {publicIp ? (
+            <button className="ip-address ip-address-button" onClick={() => onGoToPcapIp?.(publicIp)} title={`Przejdz do ${publicIp} w widoku PCAP`}>
+              {publicIp}
+            </button>
+          ) : (
+            <span className="corr-field-empty">-</span>
+          )}
+        </div>
+        <div className="corr-field">
+          <span className="corr-field-label">ASN</span>
+          {info?.asn ? <span className="asn-badge">{info.asn}</span> : <span className="corr-field-empty">-</span>}
+        </div>
+        <div className="corr-field">
+          <span className="corr-field-label">ISP</span>
+          <span className="corr-field-value">{info?.isp || info?.org || '-'}</span>
+        </div>
+      </div>
+      <div className="corr-card-meta">
+        <span className={`protocol-badge ${match.protocol.toLowerCase()}`}>{match.protocol}</span>
+        <span className="corr-meta-item">{serviceLabel(match)}</span>
+        <span className="corr-meta-sep">·</span>
+        <span className="corr-meta-item corr-meta-mono">{match.packets.toLocaleString()} pkt</span>
+        <span className="corr-meta-sep">·</span>
+        <span className="corr-meta-item corr-meta-mono">{formatBytes(match.bytes)}</span>
+      </div>
     </div>
   );
 }
 
-function DetailItem({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function renderUnmatchedSessionCard(
+  session: CorrelationUnmatchedSession,
+  ipData: Record<string, IpLookupData>,
+  onGoToPcapIp?: (ip: string) => void
+) {
+  const { ip: publicIp, info } = resolveDisplayIpForUnmatchedSession(session, ipData);
   return (
-    <div className="correlation-detail-item">
-      <span>{label}</span>
-      <strong className={mono ? 'mono' : ''}>{value}</strong>
+    <div key={`unmatched-session:${session.sessionId}`} className="corr-card">
+      <div className="corr-card-header">
+        <div className="corr-card-process">
+          <strong>Sesja bez dopasowania</strong>
+          <span className="corr-card-pid">ID {session.sessionId}</span>
+        </div>
+        <div className="corr-card-header-right">
+          <span className="corr-reason-badge">{session.reason || 'Brak powodu'}</span>
+        </div>
+      </div>
+      <div className="corr-card-fields">
+        <div className="corr-field">
+          <span className="corr-field-label">IP</span>
+          {publicIp ? (
+            <button className="ip-address ip-address-button" onClick={() => onGoToPcapIp?.(publicIp)} title={`Przejdz do ${publicIp} w widoku PCAP`}>
+              {publicIp}
+            </button>
+          ) : (
+            <span className="corr-field-empty">-</span>
+          )}
+        </div>
+        <div className="corr-field">
+          <span className="corr-field-label">ASN</span>
+          {info?.asn ? <span className="asn-badge">{info.asn}</span> : <span className="corr-field-empty">-</span>}
+        </div>
+        <div className="corr-field">
+          <span className="corr-field-label">ISP</span>
+          <span className="corr-field-value">{info?.isp || info?.org || '-'}</span>
+        </div>
+      </div>
+      <div className="corr-card-meta">
+        <span className={`protocol-badge ${session.protocol.toLowerCase()}`}>{session.protocol}</span>
+        <span className="corr-meta-item">{serviceLabelByPort(session.dstPort)}</span>
+        <span className="corr-meta-sep">·</span>
+        <span className="corr-meta-item corr-meta-mono">{session.packets.toLocaleString()} pkt</span>
+        <span className="corr-meta-sep">·</span>
+        <span className="corr-meta-item corr-meta-mono">{formatBytes(session.bytes)}</span>
+      </div>
     </div>
+  );
+}
+
+function renderUnmatchedEventCard(
+  event: CorrelationUnmatchedProcmonEvent,
+  ipData: Record<string, IpLookupData>,
+  onGoToPcapIp?: (ip: string) => void
+) {
+  const { ip: publicIp, info } = resolveDisplayIpForUnmatchedEvent(event, ipData);
+  return (
+    <div key={`unmatched-event:${event.eventId}`} className="corr-card">
+      <div className="corr-card-header">
+        <div className="corr-card-process">
+          <strong>{event.processName || 'Nieznany proces'}</strong>
+          <span className="corr-card-pid">PID {event.pid ?? '-'}</span>
+        </div>
+        <div className="corr-card-header-right">
+          <span className="corr-reason-badge">{event.reason || 'Brak powodu'}</span>
+        </div>
+      </div>
+      <div className="corr-card-fields">
+        <div className="corr-field">
+          <span className="corr-field-label">IP</span>
+          {publicIp ? (
+            <button className="ip-address ip-address-button" onClick={() => onGoToPcapIp?.(publicIp)} title={`Przejdz do ${publicIp} w widoku PCAP`}>
+              {publicIp}
+            </button>
+          ) : (
+            <span className="corr-field-empty">-</span>
+          )}
+        </div>
+        <div className="corr-field">
+          <span className="corr-field-label">ASN</span>
+          {info?.asn ? <span className="asn-badge">{info.asn}</span> : <span className="corr-field-empty">-</span>}
+        </div>
+        <div className="corr-field">
+          <span className="corr-field-label">ISP</span>
+          <span className="corr-field-value">{info?.isp || info?.org || '-'}</span>
+        </div>
+      </div>
+      <div className="corr-card-meta">
+        <span className="corr-meta-item">{event.operation || 'Zdarzenie sieciowe'}</span>
+        <span className="corr-meta-sep">·</span>
+        <span className="corr-meta-item">{serviceLabelByPort(event.remotePort)}</span>
+        <span className="corr-meta-sep">·</span>
+        <span className="corr-meta-item corr-meta-mono">{formatTimestampUs(event.tsUs)}</span>
+      </div>
+    </div>
+  );
+}
+
+function SummaryBox({
+  label,
+  value,
+  accent = 'bright',
+  active = false,
+  onClick
+}: {
+  label: string;
+  value: string;
+  accent?: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`correlation-summary-box accent-${accent} ${onClick ? 'clickable' : ''} ${active ? 'active' : ''}`}
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </button>
   );
 }
 
@@ -414,8 +497,21 @@ function parserModeLabel(mode: CorrelationReportV1['diagnostics']['parserMode'])
   }
 }
 
+function resultsViewLabel(view: 'matches' | 'unmatched_sessions' | 'unmatched_events'): string {
+  switch (view) {
+    case 'matches':
+      return 'Dopasowane sesje';
+    case 'unmatched_sessions':
+      return 'Niedopasowane sesje';
+    case 'unmatched_events':
+      return 'Niedopasowane eventy';
+    default:
+      return view;
+  }
+}
+
 function overallProgressPercent(job: CorrelationJobStatus): number {
-  const stageRanges: Record<CorrelationJobStatus['progress']['stage'], [number, number]> = {
+  const ranges: Record<CorrelationJobStatus['progress']['stage'], [number, number]> = {
     prepare: [0, 8],
     ingest_pcap: [8, 28],
     ingest_procmon: [28, 68],
@@ -423,34 +519,85 @@ function overallProgressPercent(job: CorrelationJobStatus): number {
     match: [82, 97],
     finalize: [97, 100]
   };
-
-  const [start, end] = stageRanges[job.progress.stage] ?? [0, 100];
-  const span = end - start;
+  const [start, end] = ranges[job.progress.stage] ?? [0, 100];
   const total = job.progress.total > 0 ? job.progress.total : 1;
-  const subProgress = Math.max(0, Math.min(1, job.progress.current / total));
-
+  const part = Math.max(0, Math.min(1, job.progress.current / total));
   if (job.state === 'completed') return 100;
   if (job.state === 'failed' || job.state === 'cancelled') return Math.max(start, 5);
-
-  return start + span * subProgress;
+  return start + (end - start) * part;
 }
 
-function formatTimestampUs(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '-';
-  const ms = Math.floor(value / 1000);
-  if (ms > 946684800000 && ms < 4102444800000) {
-    const date = new Date(ms);
-    return date.toLocaleString('pl-PL', {
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
+function formatDebugTs(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString('pl-PL', { hour12: false });
+}
+
+function debugLevelLabel(level: 'info' | 'warning' | 'error'): string {
+  if (level === 'warning') return 'WARN';
+  if (level === 'error') return 'BLAD';
+  return 'INFO';
+}
+
+function resolveDisplayIp(match: CorrelationMatch, ipData: Record<string, IpLookupData>) {
+  return resolveFromCandidates(collectPublicIps([match.dstIp, match.srcIp, match.eventRemoteIp]), ipData);
+}
+
+function resolveDisplayIpForUnmatchedSession(session: CorrelationUnmatchedSession, ipData: Record<string, IpLookupData>) {
+  return resolveFromCandidates(collectPublicIps([session.dstIp, session.srcIp]), ipData);
+}
+
+function resolveDisplayIpForUnmatchedEvent(event: CorrelationUnmatchedProcmonEvent, ipData: Record<string, IpLookupData>) {
+  return resolveFromCandidates(collectPublicIps([event.remoteIp]), ipData);
+}
+
+function resolveFromCandidates(candidates: string[], ipData: Record<string, IpLookupData>): { ip: string | null; info: IpLookupData | undefined } {
+  for (const ip of candidates) {
+    const info = lookupIpInfo(ipData, ip);
+    if (info) return { ip, info };
   }
-  return formatDurationUs(value);
+  return { ip: candidates[0] ?? null, info: undefined };
+}
+
+function listPublicIpCandidatesGeneric(record: CorrelationMatch | CorrelationUnmatchedSession | CorrelationUnmatchedProcmonEvent): string[] {
+  if ('tsUs' in record) return collectPublicIps([record.remoteIp]);
+  if ('matchedAtUs' in record) return collectPublicIps([record.dstIp, record.srcIp, record.eventRemoteIp]);
+  return collectPublicIps([record.dstIp, record.srcIp]);
+}
+
+function collectPublicIps(values: Array<string | null | undefined>): string[] {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    if (!raw || !isPublicIp(raw)) continue;
+    const ip = raw.trim().toLowerCase();
+    if (seen.has(ip)) continue;
+    seen.add(ip);
+    unique.push(ip);
+  }
+  return unique;
+}
+
+function lookupIpInfo(ipData: Record<string, IpLookupData>, ip: string): IpLookupData | undefined {
+  const normalized = ip.trim().toLowerCase();
+  return ipData[normalized] ?? ipData[normalized.toLowerCase()];
+}
+
+function isPublicIp(ip: string): boolean {
+  if (!ip || ip === '0.0.0.0' || ip === '255.255.255.255') return false;
+  if (ip.includes(':')) {
+    const n = ip.toLowerCase();
+    if (n === '::1' || n.startsWith('fe80:') || n.startsWith('fc') || n.startsWith('fd')) return false;
+    return true;
+  }
+  const p = ip.split('.').map(Number);
+  if (p.length !== 4) return false;
+  if (p[0] === 10 || p[0] === 127) return false;
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return false;
+  if (p[0] === 192 && p[1] === 168) return false;
+  if (p[0] === 169 && p[1] === 254) return false;
+  if (p[0] >= 224) return false;
+  return true;
 }
 
 function formatDurationUs(value: number): string {
@@ -461,98 +608,21 @@ function formatDurationUs(value: number): string {
   return `${sign}${abs} us`;
 }
 
-function formatDebugTs(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString('pl-PL', { hour12: false });
-}
-
-function debugLevelLabel(level: 'info' | 'warning' | 'error'): string {
-  switch (level) {
-    case 'info':
-      return 'INFO';
-    case 'warning':
-      return 'WARN';
-    case 'error':
-      return 'BLAD';
-    default:
-      return level;
+function formatTimestampUs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  const ms = Math.floor(value / 1000);
+  if (ms > 946684800000 && ms < 4102444800000) {
+    return new Date(ms).toLocaleString('pl-PL', {
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
   }
-}
-
-function formatOptionalNumber(value: number | null | undefined): string {
-  if (typeof value !== 'number') return '-';
-  return value.toString();
-}
-
-function resolveDisplayIp(
-  match: CorrelationMatch,
-  ipData: Record<string, IpLookupData>
-): { ip: string | null; info: IpLookupData | undefined } {
-  const candidates = listPublicIpCandidates(match);
-  for (const ip of candidates) {
-    const info = lookupIpInfo(ipData, ip);
-    if (info) {
-      return { ip, info };
-    }
-  }
-  if (candidates.length > 0) {
-    return { ip: candidates[0], info: undefined };
-  }
-  return { ip: null, info: undefined };
-}
-
-function listPublicIpCandidates(match: CorrelationMatch): string[] {
-  const candidates = [match.dstIp, match.srcIp, match.eventRemoteIp];
-  const unique: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of candidates) {
-    if (!raw || !isPublicIp(raw)) continue;
-    const normalized = normalizeIp(raw);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    unique.push(normalized);
-  }
-  return unique;
-}
-
-function lookupIpInfo(ipData: Record<string, IpLookupData>, ip: string): IpLookupData | undefined {
-  const normalized = normalizeIp(ip);
-  if (!normalized) return undefined;
-  return ipData[normalized] ?? ipData[normalized.toLowerCase()];
-}
-
-function normalizeIp(ip: string): string {
-  return ip.trim().toLowerCase();
-}
-
-function isPublicIp(ip: string): boolean {
-  if (!ip || ip === '0.0.0.0' || ip === '255.255.255.255') return false;
-  if (ip.includes(':')) {
-    const normalized = ip.toLowerCase();
-    if (normalized === '::1') return false;
-    if (normalized.startsWith('fe80:')) return false;
-    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return false;
-    return true;
-  }
-
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4) return false;
-  if (parts[0] === 10) return false;
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return false;
-  if (parts[0] === 192 && parts[1] === 168) return false;
-  if (parts[0] === 127) return false;
-  if (parts[0] === 169 && parts[1] === 254) return false;
-  if (parts[0] >= 224) return false;
-  return true;
-}
-
-function getFlagEmoji(countryCode: string): string {
-  const codePoints = countryCode
-    .toUpperCase()
-    .split('')
-    .map((char) => 127397 + char.charCodeAt(0));
-  return String.fromCodePoint(...codePoints);
+  return formatDurationUs(value);
 }
 
 function formatBytes(bytes: number): string {
@@ -568,19 +638,16 @@ function formatBytes(bytes: number): string {
 }
 
 function serviceLabel(match: CorrelationMatch): string {
-  if (typeof match.dstPort === 'number') {
-    if (match.dstPort === 80) return 'HTTP';
-    if (match.dstPort === 443) return 'HTTPS';
-    if (match.dstPort === 53) return 'DNS';
-    if (match.dstPort === 22) return 'SSH';
-    return `Port ${match.dstPort}`;
-  }
-  return '-';
+  return serviceLabelByPort(match.dstPort);
 }
 
-function formatReasons(match: CorrelationMatch): string {
-  if (!match.reasons?.length) return '-';
-  return match.reasons.map((reason) => `${reason.code} (+${reason.score})`).join(', ');
+function serviceLabelByPort(port: number | null): string {
+  if (typeof port !== 'number') return '-';
+  if (port === 80) return 'HTTP';
+  if (port === 443) return 'HTTPS';
+  if (port === 53) return 'DNS';
+  if (port === 22) return 'SSH';
+  return `Port ${port}`;
 }
 
 export default CorrelationPanel;
