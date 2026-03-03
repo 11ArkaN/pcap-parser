@@ -1,0 +1,24 @@
+{
+  "name": "pcap-analyzer",
+  "version": "1.0.0",
+  "description": "Aplikacja do analizy plikow PCAP z Wiresharka",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "bun run build && electron .",
+    "build": "bun build ./src/index.js --outdir ./dist --target browser && copy src\\styles.css dist\\styles.css 2>nul || cp src/styles.css dist/styles.css",
+    "build:dev": "bun build ./src/index.js --outdir ./dist --target browser --watch",
+    "test": "bun test-parser.js"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.10.3",
+    "xlsx": "^0.18.5",
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "buffer": "^6.0.3"
+  }
+}
