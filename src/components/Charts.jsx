@@ -62,136 +62,115 @@ function Charts({ connections, ipData }) {
       .map(([protocol, count]) => ({ name: protocol, value: count }));
   }, [connections]);
 
-  const COLORS = ['#00f5ff', '#ff00ff', '#00ff9d', '#ff6b35', '#8b5cf6', '#0066ff', '#ffd700', '#ff0050'];
+  const COLORS = ['#e2a039', '#60a5fa', '#34d399', '#fb923c', '#a78bfa', '#f43f5e', '#38bdf8', '#fb7185'];
 
   const chartTooltipStyle = {
-    backgroundColor: 'rgba(18, 18, 26, 0.95)',
+    backgroundColor: 'rgba(12, 14, 20, 0.95)',
     border: '1px solid rgba(255, 255, 255, 0.1)',
-    borderRadius: '12px',
-    color: '#fff',
-    fontFamily: 'Outfit, sans-serif'
+    borderRadius: '8px',
+    color: '#f0f1f4',
+    fontFamily: 'Sora, sans-serif',
+    fontSize: '0.8125rem',
+    padding: '8px 12px',
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)'
   };
 
   if (!connections.length) return null;
 
   return (
-    <div className="charts-section">
+    <div className="charts-section fade-in">
       <div className="charts-grid">
         <div className="chart-card">
           <h3>Top Kraje</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={countryData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={countryData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
               <XAxis 
                 dataKey="name" 
-                stroke="rgba(255,255,255,0.3)"
-                tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11, fontFamily: 'Outfit' }}
+                stroke="none"
+                tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 11, fontFamily: 'Sora' }}
                 angle={-45}
                 textAnchor="end"
-                height={70}
+                height={60}
               />
               <YAxis 
-                stroke="rgba(255,255,255,0.3)"
-                tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11, fontFamily: 'Outfit' }}
+                stroke="none"
+                tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }}
               />
-              <Tooltip 
-                contentStyle={chartTooltipStyle}
-                cursor={{ fill: 'rgba(0, 245, 255, 0.1)' }}
-              />
-              <Bar 
-                dataKey="value" 
-                fill="url(#gradient-cyan)" 
-                radius={[8, 8, 0, 0]}
-              >
-                <defs>
-                  <linearGradient id="gradient-cyan" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#00f5ff" stopOpacity={0.8} />
-                    <stop offset="100%" stopColor="#0066ff" stopOpacity={0.6} />
-                  </linearGradient>
-                </defs>
-              </Bar>
+              <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(226, 160, 57, 0.06)' }} />
+              <defs>
+                <linearGradient id="grad-amber" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#e2a039" stopOpacity={0.85} />
+                  <stop offset="100%" stopColor="#c98b1e" stopOpacity={0.5} />
+                </linearGradient>
+              </defs>
+              <Bar dataKey="value" fill="url(#grad-amber)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         <div className="chart-card">
           <h3>Top Systemy Autonomiczne (ASN)</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={asnData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={asnData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
               <XAxis 
                 dataKey="name" 
-                stroke="rgba(255,255,255,0.3)"
-                tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 10, fontFamily: 'Outfit' }}
+                stroke="none"
+                tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 9, fontFamily: 'Sora' }}
                 angle={-45}
                 textAnchor="end"
                 height={80}
                 interval={0}
               />
               <YAxis 
-                stroke="rgba(255,255,255,0.3)"
-                tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11, fontFamily: 'Outfit' }}
+                stroke="none"
+                tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }}
               />
-              <Tooltip 
-                contentStyle={chartTooltipStyle}
-                cursor={{ fill: 'rgba(255, 0, 255, 0.1)' }}
-              />
-              <Bar 
-                dataKey="value" 
-                fill="url(#gradient-magenta)" 
-                radius={[8, 8, 0, 0]}
-              >
-                <defs>
-                  <linearGradient id="gradient-magenta" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#ff00ff" stopOpacity={0.8} />
-                    <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.6} />
-                  </linearGradient>
-                </defs>
-              </Bar>
+              <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(167, 139, 250, 0.06)' }} />
+              <defs>
+                <linearGradient id="grad-violet" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.85} />
+                  <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.5} />
+                </linearGradient>
+              </defs>
+              <Bar dataKey="value" fill="url(#grad-violet)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         <div className="chart-card">
           <h3>Top Uslugi / Porty</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={portData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={portData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
               <XAxis 
                 dataKey="name" 
-                stroke="rgba(255,255,255,0.3)"
-                tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11, fontFamily: 'Outfit' }}
+                stroke="none"
+                tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 11, fontFamily: 'Sora' }}
                 angle={-45}
                 textAnchor="end"
-                height={70}
+                height={60}
               />
               <YAxis 
-                stroke="rgba(255,255,255,0.3)"
-                tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 11, fontFamily: 'Outfit' }}
+                stroke="none"
+                tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10, fontFamily: 'Fira Code' }}
               />
-              <Tooltip 
-                contentStyle={chartTooltipStyle}
-                cursor={{ fill: 'rgba(0, 255, 157, 0.1)' }}
-              />
-              <Bar 
-                dataKey="value" 
-                fill="url(#gradient-green)" 
-                radius={[8, 8, 0, 0]}
-              >
-                <defs>
-                  <linearGradient id="gradient-green" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#00ff9d" stopOpacity={0.8} />
-                    <stop offset="100%" stopColor="#00cc7d" stopOpacity={0.6} />
-                  </linearGradient>
-                </defs>
-              </Bar>
+              <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(52, 211, 153, 0.06)' }} />
+              <defs>
+                <linearGradient id="grad-emerald" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#34d399" stopOpacity={0.85} />
+                  <stop offset="100%" stopColor="#10b981" stopOpacity={0.5} />
+                </linearGradient>
+              </defs>
+              <Bar dataKey="value" fill="url(#grad-emerald)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         <div className="chart-card">
           <h3>Dystrybucja Protokolow</h3>
-          <ResponsiveContainer width="100%" height={250}>
+          <ResponsiveContainer width="100%" height={240}>
             <PieChart>
               <Pie
                 data={protocolData}
@@ -200,15 +179,15 @@ function Charts({ connections, ipData }) {
                 labelLine={false}
                 label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                 outerRadius={80}
+                innerRadius={40}
                 fill="#8884d8"
                 dataKey="value"
+                strokeWidth={0}
               >
                 {protocolData.map((entry, index) => (
                   <Cell 
                     key={`cell-${index}`} 
                     fill={COLORS[index % COLORS.length]}
-                    stroke="rgba(18, 18, 26, 0.8)"
-                    strokeWidth={2}
                   />
                 ))}
               </Pie>

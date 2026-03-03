@@ -2,6 +2,13 @@ import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 
+const SearchIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+);
+
 function DataTable({ connections, ipData, isPublic }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
@@ -88,12 +95,10 @@ function DataTable({ connections, ipData, isPublic }) {
             bValue = b[sortConfig.key] || '';
         }
 
-        // Handle numeric vs string comparison
         if (typeof aValue === 'number' && typeof bValue === 'number') {
           return sortConfig.direction === 'asc' ? aValue - bValue : bValue - aValue;
         }
         
-        // String comparison
         const aStr = String(aValue).toLowerCase();
         const bStr = String(bValue).toLowerCase();
         
@@ -141,7 +146,7 @@ function DataTable({ connections, ipData, isPublic }) {
   if (!connections.length) {
     return (
       <div className="empty-state">
-        <div className="empty-state-icon"></div>
+        <div className="empty-state-icon">📋</div>
         <h3>Brak danych</h3>
         <p>Wczytaj plik PCAP aby zobaczyć analizę</p>
       </div>
@@ -149,9 +154,10 @@ function DataTable({ connections, ipData, isPublic }) {
   }
 
   return (
-    <div className="table-container">
+    <div className="table-container fade-in">
       <div className="table-toolbar">
         <div className="table-search">
+          <span className="search-icon"><SearchIcon /></span>
           <input
             type="text"
             placeholder="Szukaj po IP, ASN, ISP, Kraju..."
@@ -160,15 +166,9 @@ function DataTable({ connections, ipData, isPublic }) {
           />
         </div>
         <div className="export-buttons">
-          <button className="btn btn-secondary" onClick={exportToCSV}>
-            CSV
-          </button>
-          <button className="btn btn-secondary" onClick={exportToJSON}>
-            JSON
-          </button>
-          <button className="btn btn-primary" onClick={exportToExcel}>
-            Excel
-          </button>
+          <button className="btn btn-secondary" onClick={exportToCSV}>CSV</button>
+          <button className="btn btn-secondary" onClick={exportToJSON}>JSON</button>
+          <button className="btn btn-primary" onClick={exportToExcel}>Excel</button>
         </div>
       </div>
 
@@ -177,16 +177,16 @@ function DataTable({ connections, ipData, isPublic }) {
           <thead>
             <tr>
               {isPublic && <>
-                <th onClick={() => handleSort('ip')} style={{cursor: 'pointer'}}>
+                <th onClick={() => handleSort('ip')}>
                   Adres IP {getSortIndicator('ip')}
                 </th>
-                <th onClick={() => handleSort('asn')} style={{cursor: 'pointer'}}>
+                <th onClick={() => handleSort('asn')}>
                   ASN {getSortIndicator('asn')}
                 </th>
-                <th onClick={() => handleSort('isp')} style={{cursor: 'pointer'}}>
+                <th onClick={() => handleSort('isp')}>
                   ISP / Organizacja {getSortIndicator('isp')}
                 </th>
-                <th onClick={() => handleSort('country')} style={{cursor: 'pointer'}}>
+                <th onClick={() => handleSort('country')}>
                   Lokalizacja {getSortIndicator('country')}
                 </th>
                 <th>Blok CIDR</th>
@@ -196,10 +196,10 @@ function DataTable({ connections, ipData, isPublic }) {
                 <th>IP Docelowe</th>
               </>}
               <th>Usługa</th>
-              <th onClick={() => handleSort('packets')} style={{cursor: 'pointer'}}>
+              <th onClick={() => handleSort('packets')}>
                 Pakiety {getSortIndicator('packets')}
               </th>
-              <th onClick={() => handleSort('bytes')} style={{cursor: 'pointer'}}>
+              <th onClick={() => handleSort('bytes')}>
                 Bajty {getSortIndicator('bytes')}
               </th>
               {isPublic && <th>Bezpieczeństwo</th>}
@@ -252,8 +252,12 @@ function DataTable({ connections, ipData, isPublic }) {
                     </div>
                   </td>
                   
-                  <td>{row.packetCount.toLocaleString()}</td>
-                  <td>{formatBytes(row.bytes)}</td>
+                  <td style={{ fontFamily: "'Fira Code', monospace", fontSize: '0.8125rem' }}>
+                    {row.packetCount.toLocaleString()}
+                  </td>
+                  <td style={{ fontFamily: "'Fira Code', monospace", fontSize: '0.8125rem' }}>
+                    {formatBytes(row.bytes)}
+                  </td>
                   
                   {isPublic && (
                     <td>

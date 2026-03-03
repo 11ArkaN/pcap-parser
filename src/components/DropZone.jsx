@@ -63,16 +63,18 @@ function DropZone({ onFileDrop, error }) {
       onDrop={handleDrop}
       onClick={handleClick}
     >
-      <div className="drop-zone-icon" />
+      <div className="drop-zone-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+      </div>
       <h2>Upusc plik PCAP lub kliknij aby przegladac</h2>
       <p>Obsluguje pliki .pcap, .pcapng, .cap z Wiresharka</p>
-      <div className="hint">
-        Plik testowy: captures/Wifi.pcapng
-      </div>
+      <div className="hint">captures/Wifi.pcapng</div>
       {error && (
-        <p style={{ color: '#ff6b35', marginTop: '1rem', fontWeight: 500 }}>
-          Blad: {error}
-        </p>
+        <p className="error-msg">Blad: {error}</p>
       )}
     </div>
   );
