@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { summarizeCorrelation } from '../utils/correlationSummary';
 import type {
     CorrelationJobStatus,
@@ -77,6 +78,7 @@ function CorrelationPanel({
     }, [correlationResult, topMatches, topUnmatchedSessions, topUnmatchedEvents, ipData]);
 
     const progress = correlationJob ? overallProgressPercent(correlationJob) : 0;
+    const canExportExcel = Boolean(correlationResult);
 
     useEffect(() => {
         if (correlationResult) {
@@ -101,6 +103,26 @@ function CorrelationPanel({
 
     const toggleExpanded = (rowKey: string) => {
         setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }));
+    };
+
+    const exportToExcel = () => {
+        if (!correlationResult) return;
+        const workbook = XLSX.utils.book_new();
+
+        const summaryRows = prepareSummaryExportRows(correlationResult, ipData);
+        appendExcelSheet(workbook, 'Podsumowanie', summaryRows);
+
+        const matchedRows = prepareMatchedExportRows(correlationResult.matches, ipData);
+        appendExcelSheet(workbook, 'Dopasowane', matchedRows);
+
+        const unmatchedSessionRows = prepareUnmatchedSessionExportRows(correlationResult.unmatchedSessions, ipData);
+        appendExcelSheet(workbook, 'Niedop. sesje', unmatchedSessionRows);
+
+        const unmatchedEventRows = prepareUnmatchedEventExportRows(correlationResult.unmatchedProcmonEvents, ipData);
+        appendExcelSheet(workbook, 'Niedop. eventy', unmatchedEventRows);
+
+        const timestamp = buildExportTimestamp();
+        XLSX.writeFile(workbook, `korelacja-${timestamp}.xlsx`);
     };
 
     return (
@@ -206,16 +228,23 @@ function CorrelationPanel({
                                 />
                             </div>
 
-                            <div className="correlation-diagnostics">
-                                <span>
-                                    Przesuniecie czasu: <strong>{formatDurationUs(correlationResult.diagnostics.timeOffsetUs)}</strong>
-                                </span>
-                                <span>
-                                    Tryb: <strong>{parserModeLabel(correlationResult.diagnostics.parserMode)}</strong>
-                                </span>
-                                <span>
-                                    Widok: <strong>{resultsViewLabel(activeResultsView)}</strong>
-                                </span>
+                            <div className="correlation-results-toolbar">
+                                <div className="correlation-diagnostics">
+                                    <span>
+                                        Przesuniecie czasu: <strong>{formatDurationUs(correlationResult.diagnostics.timeOffsetUs)}</strong>
+                                    </span>
+                                    <span>
+                                        Tryb: <strong>{parserModeLabel(correlationResult.diagnostics.parserMode)}</strong>
+                                    </span>
+                                    <span>
+                                        Widok: <strong>{resultsViewLabel(activeResultsView)}</strong>
+                                    </span>
+                                </div>
+                                <div className="export-buttons">
+                                    <button className="btn btn-primary" onClick={exportToExcel} disabled={!canExportExcel}>
+                                        Excel
+                                    </button>
+                                </div>
                             </div>
 
                             <div className="corr-cards">
@@ -845,6 +874,444 @@ function serviceLabelByPort(port: number | null): string {
 function formatReasons(match: CorrelationMatch): string {
     if (!match.reasons?.length) return '-';
     return match.reasons.map((reason) => `${reason.code} (+${reason.score})`).join(', ');
+}
+
+function prepareSummaryExportRows(
+    report: CorrelationReportV1,
+    ipData: Record<string, IpLookupData>
+): Array<Record<string, string | number>> {
+    interface SummaryBucket {
+        ip: string;
+        asn: string;
+        isp: string;
+        country: string;
+        city: string;
+        cidr: string;
+        occurrences: number;
+        matchedSessions: number;
+        unmatchedSessions: number;
+        unmatchedEvents: number;
+        packets: number;
+        bytes: number;
+        protocols: Set<string>;
+        ports: Set<string>;
+        srcIps: Set<string>;
+        dstIps: Set<string>;
+        processes: Set<string>;
+        pids: Set<string>;
+        tids: Set<string>;
+        processPaths: Set<string>;
+        commandLines: Set<string>;
+        userNames: Set<string>;
+        companies: Set<string>;
+        parentPids: Set<string>;
+        integrityLevels: Set<string>;
+        signers: Set<string>;
+        imageHashes: Set<string>;
+        operations: Set<string>;
+        results: Set<string>;
+        directions: Set<string>;
+        localEndpoints: Set<string>;
+        remoteEndpoints: Set<string>;
+        reasons: Set<string>;
+        sessionIds: Set<string>;
+        eventIds: Set<string>;
+        highConfidence: number;
+        mediumConfidence: number;
+        lowConfidence: number;
+        scoreSum: number;
+        scoreCount: number;
+        minOffsetUs: number | null;
+        maxOffsetUs: number | null;
+        firstSeenUs: number | null;
+        lastSeenUs: number | null;
+        firstMatchedUs: number | null;
+        lastMatchedUs: number | null;
+    }
+
+    const buckets = new Map<string, SummaryBucket>();
+
+    const ensureBucket = (ip: string): SummaryBucket => {
+        const existing = buckets.get(ip);
+        if (existing) return existing;
+        const info = lookupIpInfo(ipData, ip);
+        const created: SummaryBucket = {
+            ip,
+            asn: info?.asn || '-',
+            isp: info?.isp || info?.org || '-',
+            country: info?.country || '-',
+            city: info?.city || '-',
+            cidr: ((info?.cidr as string) || (info?.range as string) || '-') as string,
+            occurrences: 0,
+            matchedSessions: 0,
+            unmatchedSessions: 0,
+            unmatchedEvents: 0,
+            packets: 0,
+            bytes: 0,
+            protocols: new Set<string>(),
+            ports: new Set<string>(),
+            srcIps: new Set<string>(),
+            dstIps: new Set<string>(),
+            processes: new Set<string>(),
+            pids: new Set<string>(),
+            tids: new Set<string>(),
+            processPaths: new Set<string>(),
+            commandLines: new Set<string>(),
+            userNames: new Set<string>(),
+            companies: new Set<string>(),
+            parentPids: new Set<string>(),
+            integrityLevels: new Set<string>(),
+            signers: new Set<string>(),
+            imageHashes: new Set<string>(),
+            operations: new Set<string>(),
+            results: new Set<string>(),
+            directions: new Set<string>(),
+            localEndpoints: new Set<string>(),
+            remoteEndpoints: new Set<string>(),
+            reasons: new Set<string>(),
+            sessionIds: new Set<string>(),
+            eventIds: new Set<string>(),
+            highConfidence: 0,
+            mediumConfidence: 0,
+            lowConfidence: 0,
+            scoreSum: 0,
+            scoreCount: 0,
+            minOffsetUs: null,
+            maxOffsetUs: null,
+            firstSeenUs: null,
+            lastSeenUs: null,
+            firstMatchedUs: null,
+            lastMatchedUs: null
+        };
+        buckets.set(ip, created);
+        return created;
+    };
+
+    for (const match of report.matches) {
+        const ip = resolveSummaryIpForMatch(match);
+        if (!ip) continue;
+        const bucket = ensureBucket(ip);
+        bucket.occurrences += 1;
+        bucket.matchedSessions += 1;
+        bucket.packets += match.packets || 0;
+        bucket.bytes += match.bytes || 0;
+        if (match.protocol) bucket.protocols.add(match.protocol);
+        if (typeof match.dstPort === 'number') bucket.ports.add(String(match.dstPort));
+        if (typeof match.srcPort === 'number') bucket.ports.add(String(match.srcPort));
+        if (match.srcIp) bucket.srcIps.add(match.srcIp);
+        if (match.dstIp) bucket.dstIps.add(match.dstIp);
+        if (match.processName) bucket.processes.add(match.processName);
+        if (typeof match.pid === 'number') bucket.pids.add(String(match.pid));
+        if (typeof match.tid === 'number') bucket.tids.add(String(match.tid));
+        if (match.processPath) bucket.processPaths.add(match.processPath);
+        if (match.commandLine) bucket.commandLines.add(match.commandLine);
+        if (match.userName) bucket.userNames.add(match.userName);
+        if (match.company) bucket.companies.add(match.company);
+        if (typeof match.parentPid === 'number') bucket.parentPids.add(String(match.parentPid));
+        if (match.integrityLevel) bucket.integrityLevels.add(match.integrityLevel);
+        if (match.signer) bucket.signers.add(match.signer);
+        if (match.imageHash) bucket.imageHashes.add(match.imageHash);
+        if (match.operation) bucket.operations.add(match.operation);
+        if (match.result) bucket.results.add(match.result);
+        if (match.eventDirection) bucket.directions.add(match.eventDirection);
+        bucket.localEndpoints.add(`${match.eventLocalIp || '-'}:${match.eventLocalPort ?? '-'}`);
+        bucket.remoteEndpoints.add(`${match.eventRemoteIp || '-'}:${match.eventRemotePort ?? '-'}`);
+        if (match.sessionId) bucket.sessionIds.add(match.sessionId);
+        if (match.eventId) bucket.eventIds.add(match.eventId);
+        if (match.reasons?.length) {
+            for (const reason of match.reasons) {
+                bucket.reasons.add(`${reason.code}: ${reason.detail}`);
+            }
+        }
+        if (match.confidence === 'high') bucket.highConfidence += 1;
+        if (match.confidence === 'medium') bucket.mediumConfidence += 1;
+        if (match.confidence === 'low') bucket.lowConfidence += 1;
+        if (Number.isFinite(match.score)) {
+            bucket.scoreSum += match.score;
+            bucket.scoreCount += 1;
+        }
+        if (Number.isFinite(match.offsetUs)) {
+            bucket.minOffsetUs = bucket.minOffsetUs === null ? match.offsetUs : Math.min(bucket.minOffsetUs, match.offsetUs);
+            bucket.maxOffsetUs = bucket.maxOffsetUs === null ? match.offsetUs : Math.max(bucket.maxOffsetUs, match.offsetUs);
+        }
+        if (Number.isFinite(match.firstSeenUs)) {
+            bucket.firstSeenUs = bucket.firstSeenUs === null ? match.firstSeenUs : Math.min(bucket.firstSeenUs, match.firstSeenUs);
+        }
+        if (Number.isFinite(match.lastSeenUs)) {
+            bucket.lastSeenUs = bucket.lastSeenUs === null ? match.lastSeenUs : Math.max(bucket.lastSeenUs, match.lastSeenUs);
+        }
+        if (Number.isFinite(match.matchedAtUs)) {
+            bucket.firstMatchedUs = bucket.firstMatchedUs === null ? match.matchedAtUs : Math.min(bucket.firstMatchedUs, match.matchedAtUs);
+            bucket.lastMatchedUs = bucket.lastMatchedUs === null ? match.matchedAtUs : Math.max(bucket.lastMatchedUs, match.matchedAtUs);
+        }
+    }
+
+    for (const session of report.unmatchedSessions) {
+        const ip = resolveSummaryIpForUnmatchedSession(session);
+        if (!ip) continue;
+        const bucket = ensureBucket(ip);
+        bucket.occurrences += 1;
+        bucket.unmatchedSessions += 1;
+        bucket.packets += session.packets || 0;
+        bucket.bytes += session.bytes || 0;
+        if (session.protocol) bucket.protocols.add(session.protocol);
+        if (typeof session.dstPort === 'number') bucket.ports.add(String(session.dstPort));
+        if (typeof session.srcPort === 'number') bucket.ports.add(String(session.srcPort));
+        if (session.srcIp) bucket.srcIps.add(session.srcIp);
+        if (session.dstIp) bucket.dstIps.add(session.dstIp);
+        if (session.reason) bucket.reasons.add(session.reason);
+        if (session.sessionId) bucket.sessionIds.add(session.sessionId);
+        if (Number.isFinite(session.firstSeenUs)) {
+            bucket.firstSeenUs = bucket.firstSeenUs === null ? session.firstSeenUs : Math.min(bucket.firstSeenUs, session.firstSeenUs);
+        }
+        if (Number.isFinite(session.lastSeenUs)) {
+            bucket.lastSeenUs = bucket.lastSeenUs === null ? session.lastSeenUs : Math.max(bucket.lastSeenUs, session.lastSeenUs);
+        }
+    }
+
+    for (const event of report.unmatchedProcmonEvents) {
+        const ip = resolveSummaryIpForUnmatchedEvent(event);
+        if (!ip) continue;
+        const bucket = ensureBucket(ip);
+        bucket.occurrences += 1;
+        bucket.unmatchedEvents += 1;
+        if (event.operation) bucket.operations.add(event.operation);
+        if (event.eventDirection) bucket.directions.add(event.eventDirection);
+        if (typeof event.remotePort === 'number') bucket.ports.add(String(event.remotePort));
+        if (typeof event.eventLocalPort === 'number') bucket.ports.add(String(event.eventLocalPort));
+        if (event.eventLocalIp) bucket.srcIps.add(event.eventLocalIp);
+        if (event.remoteIp) bucket.dstIps.add(event.remoteIp);
+        if (event.processName) bucket.processes.add(event.processName);
+        if (typeof event.pid === 'number') bucket.pids.add(String(event.pid));
+        if (event.processPath) bucket.processPaths.add(event.processPath);
+        if (event.commandLine) bucket.commandLines.add(event.commandLine);
+        if (event.userName) bucket.userNames.add(event.userName);
+        if (event.company) bucket.companies.add(event.company);
+        if (typeof event.parentPid === 'number') bucket.parentPids.add(String(event.parentPid));
+        if (event.integrityLevel) bucket.integrityLevels.add(event.integrityLevel);
+        if (event.signer) bucket.signers.add(event.signer);
+        if (event.imageHash) bucket.imageHashes.add(event.imageHash);
+        if (event.reason) bucket.reasons.add(event.reason);
+        bucket.localEndpoints.add(`${event.eventLocalIp || '-'}:${event.eventLocalPort ?? '-'}`);
+        bucket.remoteEndpoints.add(`${event.remoteIp || '-'}:${event.remotePort ?? '-'}`);
+        if (event.eventId) bucket.eventIds.add(event.eventId);
+        if (Number.isFinite(event.tsUs)) {
+            bucket.firstSeenUs = bucket.firstSeenUs === null ? event.tsUs : Math.min(bucket.firstSeenUs, event.tsUs);
+            bucket.lastSeenUs = bucket.lastSeenUs === null ? event.tsUs : Math.max(bucket.lastSeenUs, event.tsUs);
+        }
+    }
+
+    const rows = Array.from(buckets.values())
+        .sort((a, b) => b.packets - a.packets || b.occurrences - a.occurrences)
+        .map((item) => ({
+            'Publiczne IP': item.ip,
+            ASN: item.asn,
+            'ISP/Organizacja': item.isp,
+            Kraj: item.country,
+            Miasto: item.city,
+            CIDR: item.cidr,
+            Wystapienia: item.occurrences,
+            'Dopasowane sesje': item.matchedSessions,
+            'Niedopasowane sesje': item.unmatchedSessions,
+            'Niedopasowane eventy': item.unmatchedEvents,
+            'Wysoka pewnosc': item.highConfidence,
+            'Srednia pewnosc': item.mediumConfidence,
+            'Niska pewnosc': item.lowConfidence,
+            'Score avg': item.scoreCount > 0 ? (item.scoreSum / item.scoreCount).toFixed(2) : '-',
+            'Offset min [us]': item.minOffsetUs ?? '-',
+            'Offset max [us]': item.maxOffsetUs ?? '-',
+            Pakiety: item.packets,
+            Bajty: item.bytes,
+            'Zakres czasowy od': item.firstSeenUs ? formatTimestampUs(item.firstSeenUs) : '-',
+            'Zakres czasowy do': item.lastSeenUs ? formatTimestampUs(item.lastSeenUs) : '-',
+            'Dopasowanie od': item.firstMatchedUs ? formatTimestampUs(item.firstMatchedUs) : '-',
+            'Dopasowanie do': item.lastMatchedUs ? formatTimestampUs(item.lastMatchedUs) : '-',
+            Protokoly: joinTopValues(item.protocols, 10),
+            Porty: joinTopValues(item.ports, 12),
+            Procesy: joinTopValues(item.processes, 12),
+            PID: joinTopValues(item.pids, 16),
+            TID: joinTopValues(item.tids, 16),
+            'Sciezki procesow': joinTopValues(item.processPaths, 8),
+            'Linie polecen': joinTopValues(item.commandLines, 8),
+            Uzytkownicy: joinTopValues(item.userNames, 10),
+            Firmy: joinTopValues(item.companies, 10),
+            'PID rodzica': joinTopValues(item.parentPids, 12),
+            Integralnosc: joinTopValues(item.integrityLevels, 10),
+            Podpis: joinTopValues(item.signers, 10),
+            Hash: joinTopValues(item.imageHashes, 8),
+            Operacje: joinTopValues(item.operations, 12),
+            Wyniki: joinTopValues(item.results, 10),
+            Kierunki: joinTopValues(item.directions, 8),
+            'Src IP': joinTopValues(item.srcIps, 12),
+            'Dst IP': joinTopValues(item.dstIps, 12),
+            'Lokalne endpointy': joinTopValues(item.localEndpoints, 8),
+            'Zdalne endpointy': joinTopValues(item.remoteEndpoints, 8),
+            'Powody/Reguly': joinTopValues(item.reasons, 10),
+            'ID sesji': joinTopValues(item.sessionIds, 8),
+            'ID eventow': joinTopValues(item.eventIds, 8)
+        }));
+
+    if (rows.length > 0) {
+        return rows;
+    }
+
+    return [
+        {
+            Info: 'Brak rekordow do podsumowania'
+        }
+    ];
+}
+
+function prepareMatchedExportRows(matches: CorrelationMatch[], ipData: Record<string, IpLookupData>): Array<Record<string, string | number>> {
+    return matches.map((match) => {
+        const { ip: publicIp, info } = resolveDisplayIp(match, ipData);
+        return {
+            Typ: 'Dopasowanie',
+            'Publiczne IP': publicIp || '-',
+            ASN: info?.asn || '-',
+            'ISP/Organizacja': info?.isp || info?.org || '-',
+            Kraj: info?.country || '-',
+            Miasto: info?.city || '-',
+            CIDR: (info?.cidr as string) || (info?.range as string) || '-',
+            Proces: match.processName || '-',
+            PID: match.pid ?? '-',
+            'Sciezka procesu': match.processPath || '-',
+            'Linia polecen': match.commandLine || '-',
+            Uzytkownik: match.userName || '-',
+            Operacja: match.operation || '-',
+            Wynik: match.result || '-',
+            Pewnosc: confidenceLabel(match.confidence),
+            Score: match.score,
+            'Offset [us]': match.offsetUs,
+            Protokol: match.protocol || '-',
+            'Src IP': match.srcIp || '-',
+            'Src Port': match.srcPort ?? '-',
+            'Dst IP': match.dstIp || '-',
+            'Dst Port': match.dstPort ?? '-',
+            Pakiety: match.packets,
+            Bajty: match.bytes,
+            'Czas start': formatTimestampUs(match.firstSeenUs),
+            'Czas koniec': formatTimestampUs(match.lastSeenUs),
+            'Czas dopasowania': formatTimestampUs(match.matchedAtUs),
+            Powody: formatReasons(match)
+        };
+    });
+}
+
+function prepareUnmatchedSessionExportRows(
+    sessions: CorrelationUnmatchedSession[],
+    ipData: Record<string, IpLookupData>
+): Array<Record<string, string | number>> {
+    return sessions.map((session) => {
+        const { ip: publicIp, info } = resolveDisplayIpForUnmatchedSession(session, ipData);
+        return {
+            Typ: 'Niedopasowana sesja',
+            'Publiczne IP': publicIp || '-',
+            ASN: info?.asn || '-',
+            'ISP/Organizacja': info?.isp || info?.org || '-',
+            Kraj: info?.country || '-',
+            Miasto: info?.city || '-',
+            CIDR: (info?.cidr as string) || (info?.range as string) || '-',
+            Powod: session.reason || '-',
+            Protokol: session.protocol || '-',
+            'Src IP': session.srcIp || '-',
+            'Src Port': session.srcPort ?? '-',
+            'Dst IP': session.dstIp || '-',
+            'Dst Port': session.dstPort ?? '-',
+            Pakiety: session.packets,
+            Bajty: session.bytes,
+            'Czas start': formatTimestampUs(session.firstSeenUs),
+            'Czas koniec': formatTimestampUs(session.lastSeenUs),
+            'ID sesji': session.sessionId
+        };
+    });
+}
+
+function prepareUnmatchedEventExportRows(
+    events: CorrelationUnmatchedProcmonEvent[],
+    ipData: Record<string, IpLookupData>
+): Array<Record<string, string | number>> {
+    return events.map((event) => {
+        const { ip: publicIp, info } = resolveDisplayIpForUnmatchedEvent(event, ipData);
+        return {
+            Typ: 'Niedopasowany event',
+            'Publiczne IP': publicIp || '-',
+            ASN: info?.asn || '-',
+            'ISP/Organizacja': info?.isp || info?.org || '-',
+            Kraj: info?.country || '-',
+            Miasto: info?.city || '-',
+            CIDR: (info?.cidr as string) || (info?.range as string) || '-',
+            Powod: event.reason || '-',
+            Proces: event.processName || '-',
+            PID: event.pid ?? '-',
+            'Sciezka procesu': event.processPath || '-',
+            'Linia polecen': event.commandLine || '-',
+            Uzytkownik: event.userName || '-',
+            Operacja: event.operation || '-',
+            Kierunek: event.eventDirection || '-',
+            'Lokalny endpoint': `${event.eventLocalIp || '-'}:${event.eventLocalPort ?? '-'}`,
+            'Zdalny endpoint': `${event.remoteIp || '-'}:${event.remotePort ?? '-'}`,
+            Czas: formatTimestampUs(event.tsUs),
+            'ID eventu': event.eventId
+        };
+    });
+}
+
+function appendExcelSheet(workbook: XLSX.WorkBook, sheetName: string, rows: Array<Record<string, string | number>>) {
+    const safeRows = rows.length > 0 ? rows : [{ Info: 'Brak rekordow' }];
+    const worksheet = XLSX.utils.json_to_sheet(safeRows);
+    worksheet['!cols'] = buildExcelColumnWidths(safeRows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+}
+
+function buildExcelColumnWidths(rows: Array<Record<string, string | number>>) {
+    const minWidth = 10;
+    if (!rows.length) return [];
+    const headers = Object.keys(rows[0]);
+    return headers.map((header) => {
+        let longest = header.length;
+        for (const row of rows) {
+            const width = String(row[header] ?? '').length;
+            if (width > longest) longest = width;
+        }
+        return { wch: Math.max(minWidth, longest + 2) };
+    });
+}
+
+function buildExportTimestamp(): string {
+    const now = new Date();
+    const pad = (value: number) => value.toString().padStart(2, '0');
+    return [
+        now.getFullYear(),
+        pad(now.getMonth() + 1),
+        pad(now.getDate()),
+        '_',
+        pad(now.getHours()),
+        pad(now.getMinutes()),
+        pad(now.getSeconds())
+    ].join('');
+}
+
+function resolveSummaryIpForMatch(match: CorrelationMatch): string | null {
+    const candidates = listPublicIpCandidates(match);
+    return candidates.length > 0 ? candidates[0] : null;
+}
+
+function resolveSummaryIpForUnmatchedSession(session: CorrelationUnmatchedSession): string | null {
+    const candidates = collectPublicIps([session.dstIp, session.srcIp]);
+    return candidates.length > 0 ? candidates[0] : null;
+}
+
+function resolveSummaryIpForUnmatchedEvent(event: CorrelationUnmatchedProcmonEvent): string | null {
+    const candidates = collectPublicIps([event.remoteIp]);
+    return candidates.length > 0 ? candidates[0] : null;
+}
+
+function joinTopValues(values: Set<string>, limit: number): string {
+    const arr = Array.from(values).filter(Boolean).sort((a, b) => a.localeCompare(b, 'pl'));
+    if (arr.length <= limit) return arr.join(', ') || '-';
+    const head = arr.slice(0, limit).join(', ');
+    return `${head} (+${arr.length - limit})`;
 }
 
 export default CorrelationPanel;

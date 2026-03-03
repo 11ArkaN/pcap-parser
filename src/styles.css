@@ -1374,6 +1374,14 @@ body::before {
   margin: 0.75rem 0;
 }
 
+.correlation-results-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .correlation-diagnostics span {
   font-size: 0.73rem;
   color: var(--text-secondary);
