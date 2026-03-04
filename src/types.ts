@@ -61,6 +61,81 @@ export interface ParsePcapResult {
   truncated: boolean;
 }
 
+export interface StreamPayloadRef {
+  fileOffset: number;
+  capturedLength: number;
+}
+
+export interface StreamTcpMeta {
+  seq: number;
+  ack: number;
+  flags: string;
+  window: number;
+  headerLength: number;
+  payloadLength: number;
+}
+
+export interface StreamPacketMeta {
+  streamId: string;
+  packetNo: number;
+  timestampUs: number | null;
+  protocol: string;
+  ipVersion: 'IPv4' | 'IPv6' | 'Other';
+  srcIp: string;
+  srcPort: number | null;
+  dstIp: string;
+  dstPort: number | null;
+  direction: 'A->B' | 'B->A' | '?';
+  capturedLength: number;
+  originalLength: number;
+  vlan: number | null;
+  ttl: number | null;
+  hopLimit: number | null;
+  payloadLength: number;
+  tcp: StreamTcpMeta | null;
+  payloadRef: StreamPayloadRef;
+}
+
+export interface PcapStreamSummary {
+  streamId: string;
+  streamIndex: number;
+  protocol: string;
+  endpointA: string;
+  endpointB: string;
+  clientIp: string;
+  clientPort: number | null;
+  serverIp: string;
+  serverPort: number | null;
+  packets: number;
+  bytes: number;
+  firstSeenUs: number | null;
+  lastSeenUs: number | null;
+  durationUs: number | null;
+}
+
+export interface PcapStreamCatalog {
+  totalPackets: number;
+  streams: PcapStreamSummary[];
+  packetsByStream: Record<string, StreamPacketMeta[]>;
+  truncated: boolean;
+  droppedPackets: number;
+}
+
+export interface StreamPayloadView {
+  capturedLength: number;
+  returnedLength: number;
+  truncated: boolean;
+  hex: string;
+  ascii: string;
+}
+
+export interface StreamsViewState {
+  search: string;
+  protocolFilter: string;
+  selectedStreamId: string | null;
+  selectedPacketNo: number | null;
+}
+
 export interface ProcmonAttachment {
   filePath: string;
   fileName: string;
