@@ -5,12 +5,16 @@ import https from 'https';
 import path from 'path';
 import { CorrelationJobManager } from './src/main/correlationJobManager';
 import { parsePcapDetailed } from './src/utils/pcapParser';
+import { parsePcapStreamCatalog, readStreamPayloadFromBuffer } from './src/utils/pcapStreams';
 import type { CorrelationRequest, ParsedConnection } from './src/types';
 
 let mainWindow: BrowserWindow | null = null;
 const correlationJobs = new CorrelationJobManager();
 
 const DEFAULT_MAX_CONNECTIONS = 400_000;
+const DEFAULT_MAX_STREAM_PACKETS = 400_000;
+const MAX_PCAP_CACHE_ENTRIES = 3;
+const pcapBufferCache = new Map<string, Uint8Array>();
 type HttpProtocol = 'http:' | 'https:';
 
 interface RequestOptions extends https.RequestOptions {
@@ -53,19 +57,42 @@ type LookupResponse = LookupSuccess | LookupFailure;
 
 type ParseFileResponse =
   | {
-      success: true;
-      data: {
-        filePath: string;
-        fileName: string;
-        fileSize: number;
-        connections: ParsedConnection[];
-        truncated: boolean;
-      };
-    }
-  | {
-      success: false;
-      error: string;
+    success: true;
+    data: {
+      filePath: string;
+      fileName: string;
+      fileSize: number;
+      connections: ParsedConnection[];
+      truncated: boolean;
     };
+  }
+  | {
+    success: false;
+    error: string;
+  };
+
+function normalizeCacheKey(filePath: string): string {
+  return path.resolve(filePath).toLowerCase();
+}
+
+function readPcapBufferCached(filePath: string): Uint8Array {
+  const key = normalizeCacheKey(filePath);
+  const existing = pcapBufferCache.get(key);
+  if (existing) {
+    pcapBufferCache.delete(key);
+    pcapBufferCache.set(key, existing);
+    return existing;
+  }
+
+  const next = fs.readFileSync(filePath);
+  pcapBufferCache.set(key, next);
+  while (pcapBufferCache.size > MAX_PCAP_CACHE_ENTRIES) {
+    const oldestKey = pcapBufferCache.keys().next().value;
+    if (!oldestKey) break;
+    pcapBufferCache.delete(oldestKey);
+  }
+  return next;
+}
 
 function makeRequest(options: RequestOptions, maxRetries = 3): Promise<RequestResult> {
   return new Promise((resolve, reject) => {
@@ -198,7 +225,7 @@ ipcMain.handle('read-file', async (_event, filePath: string) => {
 ipcMain.handle('parse-file', async (_event, filePath: string, maxConnections = DEFAULT_MAX_CONNECTIONS): Promise<ParseFileResponse> => {
   try {
     const fileStat = fs.statSync(filePath);
-    const raw = fs.readFileSync(filePath);
+    const raw = readPcapBufferCached(filePath);
     const { connections, truncated } = await parsePcapDetailed(raw, { maxConnections });
 
     return {
@@ -216,6 +243,52 @@ ipcMain.handle('parse-file', async (_event, filePath: string, maxConnections = D
     return { success: false, error: message };
   }
 });
+
+ipcMain.handle('parse-stream-catalog', async (_event, filePath: string, maxPackets = DEFAULT_MAX_STREAM_PACKETS) => {
+  try {
+    const fileStat = fs.statSync(filePath);
+    const raw = readPcapBufferCached(filePath);
+    const catalog = await parsePcapStreamCatalog(raw, { maxPackets });
+
+    return {
+      success: true,
+      data: {
+        filePath,
+        fileName: path.basename(filePath),
+        fileSize: fileStat.size,
+        catalog
+      }
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+});
+
+ipcMain.handle(
+  'get-stream-packet-payload',
+  async (
+    _event,
+    payload: { filePath?: string; payloadRef?: { fileOffset?: number; capturedLength?: number }; maxBytes?: number }
+  ) => {
+    try {
+      if (!payload?.filePath || !payload.payloadRef) {
+        return { success: false, error: 'Brak danych do odczytu payloadu.' };
+      }
+
+      const raw = readPcapBufferCached(payload.filePath);
+      const payloadRef = {
+        fileOffset: Number(payload.payloadRef.fileOffset ?? 0),
+        capturedLength: Number(payload.payloadRef.capturedLength ?? 0)
+      };
+      const data = readStreamPayloadFromBuffer(raw, payloadRef, payload.maxBytes);
+      return { success: true, data };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  }
+);
 
 ipcMain.handle('lookup-ip', async (_event, ip: string): Promise<LookupResponse> => {
   console.log(`[IPC] lookup-ip wywolane dla: ${ip}`);

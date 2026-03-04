@@ -3,7 +3,10 @@ import type {
   CorrelationReportV1,
   CorrelationRequest,
   IpLookupData,
-  ParsedConnection
+  PcapStreamCatalog,
+  ParsedConnection,
+  StreamPayloadRef,
+  StreamPayloadView
 } from './types';
 
 type OpenDialogResult = {
@@ -13,70 +16,95 @@ type OpenDialogResult = {
 
 type ReadFileResult =
   | {
-      success: true;
-      buffer: number[];
-      fileName: string;
-    }
+    success: true;
+    buffer: number[];
+    fileName: string;
+  }
   | {
-      success: false;
-      error: string;
-    };
+    success: false;
+    error: string;
+  };
 
 type LookupIpResult =
   | {
-      success: true;
-      data: IpLookupData;
-    }
+    success: true;
+    data: IpLookupData;
+  }
   | {
-      success: false;
-      error: string;
-    };
+    success: false;
+    error: string;
+  };
 
 type ParseFileResult =
   | {
-      success: true;
-      data: {
-        filePath: string;
-        fileName: string;
-        fileSize: number;
-        connections: ParsedConnection[];
-        truncated: boolean;
-      };
-    }
-  | {
-      success: false;
-      error: string;
+    success: true;
+    data: {
+      filePath: string;
+      fileName: string;
+      fileSize: number;
+      connections: ParsedConnection[];
+      truncated: boolean;
     };
+  }
+  | {
+    success: false;
+    error: string;
+  };
+
+type ParseStreamCatalogResult =
+  | {
+    success: true;
+    data: {
+      filePath: string;
+      fileName: string;
+      fileSize: number;
+      catalog: PcapStreamCatalog;
+    };
+  }
+  | {
+    success: false;
+    error: string;
+  };
+
+type StreamPayloadResult =
+  | {
+    success: true;
+    data: StreamPayloadView;
+  }
+  | {
+    success: false;
+    error: string;
+  };
 
 type CorrelationStartResult =
   | {
-      success: true;
-      jobId: string;
-    }
+    success: true;
+    jobId: string;
+  }
   | {
-      success: false;
-      error: string;
-    };
+    success: false;
+    error: string;
+  };
 
 type CorrelationStatusResult =
   | {
-      success: true;
-      status: CorrelationJobStatus;
-    }
+    success: true;
+    status: CorrelationJobStatus;
+  }
   | {
-      success: false;
-      error: string;
-    };
+    success: false;
+    error: string;
+  };
 
 type CorrelationResult =
   | {
-      success: true;
-      data: CorrelationReportV1;
-    }
+    success: true;
+    data: CorrelationReportV1;
+  }
   | {
-      success: false;
-      error: string;
-    };
+    success: false;
+    error: string;
+  };
 
 type CorrelationCancelResult = {
   success: boolean;
@@ -90,6 +118,8 @@ declare global {
       openProcmonDialog: () => Promise<OpenDialogResult>;
       readFile: (filePath: string) => Promise<ReadFileResult>;
       parseFile: (filePath: string, maxConnections?: number) => Promise<ParseFileResult>;
+      parseStreamCatalog: (filePath: string, maxPackets?: number) => Promise<ParseStreamCatalogResult>;
+      getStreamPacketPayload: (payload: { filePath: string; payloadRef: StreamPayloadRef; maxBytes?: number }) => Promise<StreamPayloadResult>;
       lookupIp: (ip: string) => Promise<LookupIpResult>;
       startCorrelation: (payload: CorrelationRequest) => Promise<CorrelationStartResult>;
       getCorrelationStatus: (jobId: string) => Promise<CorrelationStatusResult>;
@@ -105,4 +135,4 @@ declare module 'bun:test' {
   export const expect: (value: unknown) => any;
 }
 
-export {};
+export { };

@@ -3,6 +3,7 @@ import Charts from './components/Charts';
 import CorrelationPanel from './components/CorrelationPanel';
 import DataTable from './components/DataTable';
 import LoadingOverlay from './components/LoadingOverlay';
+import StreamsPanel from './components/StreamsPanel';
 import { parsePcapDetailed } from './utils/pcapParser';
 import { enrichIpData } from './utils/whoisApi';
 import type {
@@ -11,8 +12,12 @@ import type {
   FileInputPayload,
   IpLookupData,
   LoadingProgress,
+  PcapStreamCatalog,
   ParsedConnection,
-  ProcmonAttachment
+  ProcmonAttachment,
+  StreamPayloadRef,
+  StreamPayloadView,
+  StreamsViewState
 } from './types';
 
 const MAX_CONNECTIONS_PER_ANALYSIS = 400_000;
@@ -30,12 +35,16 @@ interface AnalysisSession {
   file: AnalysisFileData;
   connections: ParsedConnection[];
   ipData: Record<string, IpLookupData>;
-  activeView: 'public' | 'local';
+  activeView: 'public' | 'local' | 'streams';
   activeSection: 'pcap' | 'correlation';
   pcapFocusRequest: { ip: string; requestId: number } | null;
   procmonFiles: ProcmonAttachment[];
   correlationJob: CorrelationJobStatus | null;
   correlation: CorrelationReportV1 | null;
+  streamCatalog: PcapStreamCatalog | null;
+  streamCatalogLoading: boolean;
+  streamCatalogError: string | null;
+  streamsViewState: StreamsViewState;
   warning?: string | null;
 }
 
@@ -90,7 +99,7 @@ function App() {
       fileInput: FileInputPayload,
       options: {
         forcedId?: string;
-        activeView?: 'public' | 'local';
+        activeView?: 'public' | 'local' | 'streams';
         activeSection?: 'pcap' | 'correlation';
         procmonFiles?: ProcmonAttachment[];
         progressLabel?: string;
@@ -178,6 +187,15 @@ function App() {
         procmonFiles: options.procmonFiles ?? [],
         correlationJob: null,
         correlation: null,
+        streamCatalog: null,
+        streamCatalogLoading: false,
+        streamCatalogError: null,
+        streamsViewState: {
+          search: '',
+          protocolFilter: 'all',
+          selectedStreamId: null,
+          selectedPacketNo: null
+        },
         warning
       };
     },
@@ -490,12 +508,112 @@ function App() {
   );
 
   const setActiveDataView = useCallback(
-    (view: 'public' | 'local') => {
+    (view: 'public' | 'local' | 'streams') => {
       if (!activeAnalysisId) return;
       patchAnalysis(activeAnalysisId, (analysis) => ({ ...analysis, activeView: view }));
     },
     [activeAnalysisId, patchAnalysis]
   );
+
+  const patchStreamsViewState = useCallback(
+    (patch: Partial<StreamsViewState>) => {
+      if (!activeAnalysisId) return;
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        streamsViewState: {
+          ...analysis.streamsViewState,
+          ...patch
+        }
+      }));
+    },
+    [activeAnalysisId, patchAnalysis]
+  );
+
+  const loadStreamCatalog = useCallback(async () => {
+    if (!activeAnalysisId) return;
+    const target = analyses.find((analysis) => analysis.id === activeAnalysisId);
+    if (!target) return;
+    if (!target.file.path) {
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        streamCatalogError: 'Zakladka streamow wymaga pliku PCAP dostepnego pod sciezka lokalna.'
+      }));
+      return;
+    }
+
+    patchAnalysis(activeAnalysisId, (analysis) => ({
+      ...analysis,
+      streamCatalogLoading: true,
+      streamCatalogError: null
+    }));
+
+    try {
+      const result = await window.electronAPI.parseStreamCatalog(target.file.path, MAX_CONNECTIONS_PER_ANALYSIS);
+      if (!result.success) {
+        const streamError = 'error' in result ? result.error : 'Nie udalo sie wczytac streamow.';
+        throw new Error(streamError);
+      }
+
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        streamCatalog: result.data.catalog,
+        streamCatalogLoading: false,
+        streamCatalogError: null
+      }));
+    } catch (err) {
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        streamCatalogLoading: false,
+        streamCatalogError: err instanceof Error ? err.message : String(err)
+      }));
+    }
+  }, [activeAnalysisId, analyses, patchAnalysis]);
+
+  const requestStreamPayload = useCallback(
+    async (filePath: string, payloadRef: StreamPayloadRef, maxBytes?: number): Promise<StreamPayloadView> => {
+      const result = await window.electronAPI.getStreamPacketPayload({ filePath, payloadRef, maxBytes });
+      if (!result.success) {
+        const payloadError = 'error' in result ? result.error : 'Nie udalo sie pobrac payloadu.';
+        throw new Error(payloadError);
+      }
+      return result.data;
+    },
+    []
+  );
+
+  const goToPcapIpFromStreams = useCallback(
+    (ip: string) => {
+      if (!activeAnalysisId) return;
+      const requestId = Date.now();
+      patchAnalysis(activeAnalysisId, (analysis) => ({
+        ...analysis,
+        activeSection: 'pcap',
+        activeView: isPublicIp(ip) ? 'public' : 'local',
+        pcapFocusRequest: {
+          ip,
+          requestId
+        }
+      }));
+    },
+    [activeAnalysisId, patchAnalysis]
+  );
+
+  useEffect(() => {
+    if (!activeAnalysis) return;
+    if (activeAnalysis.activeSection !== 'pcap') return;
+    if (activeAnalysis.activeView !== 'streams') return;
+    if (activeAnalysis.streamCatalogError) return;
+    if (activeAnalysis.streamCatalog || activeAnalysis.streamCatalogLoading) return;
+    void loadStreamCatalog();
+  }, [
+    activeAnalysis?.id,
+    activeAnalysis?.activeSection,
+    activeAnalysis?.activeView,
+    activeAnalysis?.streamCatalogError,
+    activeAnalysis?.streamCatalog,
+    activeAnalysis?.streamCatalogLoading,
+    loadStreamCatalog
+  ]);
 
   const setActiveSection = useCallback(
     (section: 'pcap' | 'correlation') => {
@@ -721,14 +839,36 @@ function App() {
                     Siec lokalna
                     <span className="tab-badge">{localConnections.length}</span>
                   </button>
+                  <button
+                    className={`tab ${activeAnalysis.activeView === 'streams' ? 'active' : ''}`}
+                    onClick={() => setActiveDataView('streams')}
+                  >
+                    Streamy
+                    <span className="tab-badge">{activeAnalysis.streamCatalog?.streams.length ?? '-'}</span>
+                  </button>
                 </div>
 
-                <DataTable
-                  connections={activeAnalysis.activeView === 'public' ? publicConnections : localConnections}
-                  ipData={activeAnalysis.ipData}
-                  isPublic={activeAnalysis.activeView === 'public'}
-                  focusRequest={activeAnalysis.pcapFocusRequest}
-                />
+                {activeAnalysis.activeView === 'streams' ? (
+                  <StreamsPanel
+                    active
+                    filePath={activeAnalysis.file.path}
+                    catalog={activeAnalysis.streamCatalog}
+                    loading={activeAnalysis.streamCatalogLoading}
+                    error={activeAnalysis.streamCatalogError}
+                    viewState={activeAnalysis.streamsViewState}
+                    onViewStateChange={patchStreamsViewState}
+                    onReload={() => void loadStreamCatalog()}
+                    onRequestPayload={requestStreamPayload}
+                    onGoToPcapIp={goToPcapIpFromStreams}
+                  />
+                ) : (
+                  <DataTable
+                    connections={activeAnalysis.activeView === 'public' ? publicConnections : localConnections}
+                    ipData={activeAnalysis.ipData}
+                    isPublic={activeAnalysis.activeView === 'public'}
+                    focusRequest={activeAnalysis.pcapFocusRequest}
+                  />
+                )}
               </>
             ) : (
               <CorrelationPanel

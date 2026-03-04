@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProcmonDialog: () => ipcRenderer.invoke('open-procmon-dialog'),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   parseFile: (filePath: string, maxConnections?: number) => ipcRenderer.invoke('parse-file', filePath, maxConnections),
+  parseStreamCatalog: (filePath: string, maxPackets?: number) => ipcRenderer.invoke('parse-stream-catalog', filePath, maxPackets),
+  getStreamPacketPayload: (payload: { filePath: string; payloadRef: unknown; maxBytes?: number }) =>
+    ipcRenderer.invoke('get-stream-packet-payload', payload),
   lookupIp: (ip: string) => ipcRenderer.invoke('lookup-ip', ip),
   startCorrelation: (payload: unknown) => ipcRenderer.invoke('start-correlation', payload),
   getCorrelationStatus: (jobId: string) => ipcRenderer.invoke('get-correlation-status', jobId),
