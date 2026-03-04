@@ -7,6 +7,7 @@ import type {
   StreamsViewState
 } from '../types';
 import { filterStreams } from '../utils/streamFilter';
+import { exportStreamsToExcel } from '../utils/streamsExcelExport';
 
 interface StreamsPanelProps {
   active: boolean;
@@ -50,6 +51,8 @@ function StreamsPanel({
 }: StreamsPanelProps) {
   const { search, protocolFilter, selectedStreamId, selectedPacketNo } = viewState;
   const [payloadStates, setPayloadStates] = useState<Record<string, PayloadState>>({});
+  const [isExcelExporting, setIsExcelExporting] = useState(false);
+  const [excelExportError, setExcelExportError] = useState<string | null>(null);
 
   const streamList = useMemo(() => catalog?.streams ?? [], [catalog]);
 
@@ -76,6 +79,30 @@ function StreamsPanel({
     }
     const next = [...parts, token].join(' ');
     onViewStateChange({ search: next });
+  };
+
+  const exportToExcel = async () => {
+    if (!catalog) return;
+    setExcelExportError(null);
+    setIsExcelExporting(true);
+    try {
+      exportStreamsToExcel({
+        fileName: extractFileName(filePath),
+        generatedAt: new Date(),
+        searchQuery: search,
+        protocolFilter,
+        totalPackets: catalog.totalPackets,
+        droppedPackets: catalog.droppedPackets,
+        filteredStreams,
+        packetsByStream: catalog.packetsByStream,
+        selectedStreamId
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setExcelExportError(`Nie udalo sie wyeksportowac Excela: ${message}`);
+    } finally {
+      setIsExcelExporting(false);
+    }
   };
 
   useEffect(() => {
@@ -177,6 +204,9 @@ function StreamsPanel({
             <option value="all">Wszystkie protokoly</option>
             {protocolOptions.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
+          <button className="btn btn-secondary" onClick={() => void exportToExcel()} disabled={isExcelExporting}>
+            {isExcelExporting ? 'Tworzenie Excel...' : 'Excel'}
+          </button>
           <span className="streams-pill">{filteredStreams.length.toLocaleString()} streamow</span>
           <span className="streams-pill">{catalog.totalPackets.toLocaleString()} pakietow</span>
           {catalog.droppedPackets > 0 && (
@@ -184,6 +214,7 @@ function StreamsPanel({
           )}
         </div>
       </div>
+      {excelExportError && <div className="analysis-warning">{excelExportError}</div>}
       <div className="streams-quick-filters">
         <button
           type="button"
@@ -412,3 +443,10 @@ function formatTimestampUs(value: number | null): string {
 }
 
 export default StreamsPanel;
+
+function extractFileName(filePath?: string): string {
+  if (!filePath) return 'nieznany-plik.pcap';
+  const normalized = filePath.replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  return parts[parts.length - 1] || filePath;
+}
