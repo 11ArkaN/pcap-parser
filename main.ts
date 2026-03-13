@@ -155,6 +155,7 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      devTools: !app.isPackaged,
       preload: path.join(distDir, 'preload.js')
     },
     title: 'Analizator PCAP',
