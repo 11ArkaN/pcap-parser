@@ -12,7 +12,9 @@
     "build": "bun run build:main && bun run build:renderer && bun run copy:styles",
     "test": "bun test",
     "test:captures": "bun test tests/captures-table-data.test.ts",
+    "runtime:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/prepare_release_runtime.ps1",
     "dist": "bun run build && electron-builder --win nsis",
+    "dist:internal": "bun run build && electron-builder --win nsis --config electron-builder.internal.cjs",
     "sidecar:install-deps": "python -m pip install -r sidecar/requirements.txt"
   },
   "dependencies": {
@@ -68,6 +70,7 @@
       ]
     },
     "nsis": {
+      "include": "build/installer.internal.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
