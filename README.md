@@ -54,6 +54,28 @@ bun run dist
 ```
 
 The installer is written to `release/`.
+This is the same installer variant intended for GitHub Releases.
+End users do not need a system-wide Python installation.
+The release pipeline prepares and bundles the correlation runtime in advance: embedded Python, `pip` packages from `sidecar/requirements.txt`, and the bundled Sysinternals Process Monitor binary.
+During installation the bootstrap script mainly verifies that runtime and only falls back to downloading missing pieces if the bundled copy is incomplete.
+
+### Internal package (auto dependencies on install)
+
+```bash
+bun run dist:internal
+```
+
+This build creates a non-public installer in `release/internal/`.
+During installation, the installer bootstraps embedded Python and installs sidecar dependencies automatically (no manual `pip install` on end-user machines).
+
+## GitHub Releases
+
+Tagging a version such as `v1.0.3` triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
+
+- builds the standard Windows NSIS installer on `windows-latest`
+- prepares the bundled Python sidecar runtime before packaging
+- uploads the generated installer artifacts to the matching GitHub Release
+- keeps the same runtime bootstrap as `dist:internal`, so end users do not need to install Python, Procmon, or sidecar packages by hand
 
 ## Testing
 
@@ -103,6 +125,31 @@ It runs in a Python sidecar and uses:
 | `sidecar/` | `resources/sidecar` |
 | `vendor/procmon/` | `resources/procmon` |
 | `python/` | `resources/python` |
+
+The NSIS installer then runs `sidecar/install_runtime.ps1`, which verifies or installs:
+
+- embedded Python runtime in `resources/python`
+- `pip`
+- packages from `sidecar/requirements.txt` including `procmon-parser`
+- Process Monitor binaries in `resources/procmon`
+
+For GitHub Releases, the repository prepares that runtime ahead of time with:
+
+```bash
+bun run runtime:prepare
+```
+
+This makes the packaged installer self-sufficient on machines without Python.
+
+## Technology Stack
+
+- Electron + TypeScript for the desktop shell and IPC bridge
+- React for the renderer UI
+- Recharts for charts and traffic visualizations
+- PapaParse and SheetJS (`xlsx`) for export/import workflows
+- Python sidecar for Procmon correlation
+- Sysinternals Process Monitor for Windows process/network event correlation
+- RIPE / RDAP / ip-api for IP enrichment data
 
 ## Project Structure
 
