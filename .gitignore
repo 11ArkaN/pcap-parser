@@ -34,3 +34,4 @@ sidecar/__pycache__/*
 vendor/*
 tmp/
 python/
+captures/
