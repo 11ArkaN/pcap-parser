@@ -1,4 +1,5 @@
 import type { PcapStreamSummary } from '../types';
+import { getResolvedServiceSearchTokens, isKnownServiceToken, resolveServiceFromPorts } from './serviceResolver';
 
 type NumericField = 'packets' | 'bytes';
 type CompareOp = '>' | '>=' | '<' | '<=' | '=';
@@ -294,20 +295,15 @@ function pushNumeric(query: ParsedQuery, value: NumericRule, negated: boolean): 
 }
 
 function isServiceToken(token: string): boolean {
-  return token === 'http' || token === 'https' || token === 'dns' || token === 'ssh' || token === 'rdp';
+  return isKnownServiceToken(token);
 }
 
 function inferServiceTags(stream: PcapStreamSummary): string[] {
-  const ports = [stream.clientPort, stream.serverPort];
-  const tags = new Set<string>();
-  for (const rawPort of ports) {
-    if (!Number.isInteger(rawPort)) continue;
-    const port = rawPort as number;
-    if (port === 80 || port === 8080 || port === 8000 || port === 8888) tags.add('http');
-    if (port === 443 || port === 8443) tags.add('https');
-    if (port === 53) tags.add('dns');
-    if (port === 22) tags.add('ssh');
-    if (port === 3389) tags.add('rdp');
+  const protocol = normalize(stream.protocol).toUpperCase();
+  if (protocol !== 'TCP' && protocol !== 'UDP') {
+    return [];
   }
-  return Array.from(tags);
+
+  const result = resolveServiceFromPorts(protocol, stream.clientPort, stream.serverPort);
+  return getResolvedServiceSearchTokens(result);
 }

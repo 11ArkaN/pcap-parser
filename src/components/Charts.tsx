@@ -12,6 +12,7 @@ import {
   YAxis
 } from 'recharts';
 import type { IpLookupData, ParsedConnection } from '../types';
+import { formatResolvedServiceNameWithFallback, resolveConnectionServices } from '../utils/serviceResolver';
 
 interface ChartsProps {
   connections: ParsedConnection[];
@@ -59,10 +60,10 @@ function Charts({ connections, ipData }: ChartsProps) {
   const portData = useMemo<ChartDatum[]>(() => {
     const counts: Record<string, number> = {};
     connections.forEach((conn) => {
-      if (conn.dstPort) {
-        const service = getServiceName(conn.dstPort);
-        counts[service] = (counts[service] || 0) + 1;
-      }
+      const resolution = resolveConnectionServices(conn);
+      const service = formatResolvedServiceNameWithFallback(resolution, conn.srcPort, conn.dstPort);
+      if (service === 'N/D') return;
+      counts[service] = (counts[service] || 0) + 1;
     });
 
     return Object.entries(counts)
@@ -217,31 +218,6 @@ function isPublicIp(ip: string): boolean {
   if (parts[0] === 169 && parts[1] === 254) return false;
   if (parts[0] >= 224) return false;
   return true;
-}
-
-function getServiceName(port: number): string {
-  const services: Record<number, string> = {
-    20: 'FTP-Data',
-    21: 'FTP',
-    22: 'SSH',
-    23: 'Telnet',
-    25: 'SMTP',
-    53: 'DNS',
-    80: 'HTTP',
-    110: 'POP3',
-    143: 'IMAP',
-    443: 'HTTPS',
-    465: 'SMTPS',
-    587: 'SMTP',
-    993: 'IMAPS',
-    995: 'POP3S',
-    3306: 'MySQL',
-    3389: 'RDP',
-    5432: 'PostgreSQL',
-    8080: 'HTTP-Alt',
-    8443: 'HTTPS-Alt'
-  };
-  return services[port] || `Port-${port}`;
 }
 
 export default Charts;

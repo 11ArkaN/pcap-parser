@@ -1,8 +1,14 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import type { IpLookupData, ParsedConnection } from '../types';
+import type { IpLookupData, ParsedConnection, ResolvedServiceResult } from '../types';
 import { createWorkbookWithMetadata } from '../utils/excelWorkbook';
+import {
+  formatResolvedServiceNameWithFallback,
+  formatResolvedServicePort,
+  formatResolvedServiceRfc,
+  resolveConnectionServices
+} from '../utils/serviceResolver';
 
 const SearchIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -18,6 +24,7 @@ interface DataTableProps {
   focusRequest?: { ip: string; requestId: number } | null;
 }
 
+type AggregationMode = 'connections' | 'uniqueIps';
 type SortKey = 'ip' | 'asn' | 'isp' | 'country' | 'packets' | 'bytes' | null;
 
 interface SortConfig {
@@ -33,10 +40,17 @@ interface GroupedRow {
   dstPort: number | null;
   packetCount: number;
   bytes: number;
-  services: Set<string>;
+  serviceLabels: Set<string>;
+  servicePorts: Set<string>;
+  serviceRfcs: Set<string>;
+  serviceConfidence: ResolvedServiceResult['confidence'];
+  serviceResolution: ResolvedServiceResult;
+  primaryServicePort: number | null;
 }
 
 export interface AggregatedRow {
+  kind: 'connection';
+  ip: string;
   src: string;
   dst: string;
   protocol: string;
@@ -45,7 +59,45 @@ export interface AggregatedRow {
   packetCount: number;
   bytes: number;
   services: string;
+  servicePorts: string;
+  serviceConfidence: ResolvedServiceResult['confidence'];
+  serviceRfc: string;
+  serviceResolution: ResolvedServiceResult;
+  primaryServicePort: number | null;
 }
+
+interface GroupedIpRow {
+  ip: string;
+  peers: Set<string>;
+  protocolCounts: Record<string, number>;
+  packetCount: number;
+  bytes: number;
+  serviceLabels: Set<string>;
+  servicePorts: Set<string>;
+  serviceRfcs: Set<string>;
+  serviceConfidence: ResolvedServiceResult['confidence'];
+  serviceResolution: ResolvedServiceResult;
+  primaryServicePort: number | null;
+}
+
+export interface AggregatedIpRow {
+  kind: 'ip';
+  ip: string;
+  peers: string;
+  peerCount: number;
+  protocol: string;
+  primaryProtocol: string;
+  packetCount: number;
+  bytes: number;
+  services: string;
+  servicePorts: string;
+  serviceConfidence: ResolvedServiceResult['confidence'];
+  serviceRfc: string;
+  serviceResolution: ResolvedServiceResult;
+  primaryServicePort: number | null;
+}
+
+type TableRow = AggregatedRow | AggregatedIpRow;
 
 export interface ExportRow {
   'Adres IP': string;
@@ -56,20 +108,31 @@ export interface ExportRow {
   'Blok CIDR': string;
   Usluga: string;
   Port: number | string;
+  'Port uslugi': string;
+  Pewnosc: string;
+  RFC: string;
   Protokol: string;
   Pakiety: number;
   Bajty: number;
-  'IP Zrodlowe': string;
-  'IP Docelowe': string;
+  'IP Zrodlowe'?: string;
+  'IP Docelowe'?: string;
+  'Komunikuje sie z'?: string;
+  'Liczba peerow'?: number;
 }
 
 function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataTableProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: null, direction: 'asc' });
   const [highlightIp, setHighlightIp] = useState<string | null>(null);
+  const [aggregationMode, setAggregationMode] = useState<AggregationMode>('connections');
   const tableWrapperRef = useRef<HTMLDivElement | null>(null);
 
-  const aggregatedData = useMemo(() => aggregateConnections(connections), [connections]);
+  const connectionRows = useMemo(() => aggregateConnections(connections), [connections]);
+  const uniqueIpRows = useMemo(() => aggregateConnectionsByIp(connections, isPublic), [connections, isPublic]);
+  const aggregatedData = useMemo<TableRow[]>(
+    () => (aggregationMode === 'connections' ? connectionRows : uniqueIpRows),
+    [aggregationMode, connectionRows, uniqueIpRows]
+  );
 
   const filteredData = useMemo(() => {
     let data = [...aggregatedData];
@@ -78,11 +141,15 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
       const term = searchTerm.toLowerCase();
       data = data.filter(
         (row) =>
-          row.src.toLowerCase().includes(term) ||
-          row.dst.toLowerCase().includes(term) ||
-          ipData[row.dst]?.asn?.toLowerCase().includes(term) ||
-          ipData[row.dst]?.isp?.toLowerCase().includes(term) ||
-          ipData[row.dst]?.country?.toLowerCase().includes(term)
+          row.ip.toLowerCase().includes(term) ||
+          ('src' in row && row.src.toLowerCase().includes(term)) ||
+          ('dst' in row && row.dst.toLowerCase().includes(term)) ||
+          ('peers' in row && row.peers.toLowerCase().includes(term)) ||
+          row.services.toLowerCase().includes(term) ||
+          row.servicePorts.toLowerCase().includes(term) ||
+          ipData[row.ip]?.asn?.toLowerCase().includes(term) ||
+          ipData[row.ip]?.isp?.toLowerCase().includes(term) ||
+          ipData[row.ip]?.country?.toLowerCase().includes(term)
       );
     }
 
@@ -91,15 +158,13 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
         let aValue: string | number = '';
         let bValue: string | number = '';
 
-        const publicIpA = isPublicIp(a.dst) ? a.dst : a.src;
-        const publicIpB = isPublicIp(b.dst) ? b.dst : b.src;
-        const infoA: Partial<IpLookupData> = ipData[publicIpA] ?? {};
-        const infoB: Partial<IpLookupData> = ipData[publicIpB] ?? {};
+        const infoA: Partial<IpLookupData> = ipData[a.ip] ?? {};
+        const infoB: Partial<IpLookupData> = ipData[b.ip] ?? {};
 
         switch (sortConfig.key) {
           case 'ip':
-            aValue = publicIpA;
-            bValue = publicIpB;
+            aValue = a.ip;
+            bValue = b.ip;
             break;
           case 'asn':
             aValue = infoA.asn || '';
@@ -183,19 +248,19 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
   };
 
   const exportToCSV = () => {
-    const exportData = prepareExportData(filteredData, ipData, isPublic);
+    const exportData = prepareExportData(filteredData, ipData, isPublic, aggregationMode);
     const csv = Papa.unparse(exportData);
     downloadFile(csv, 'analiza-pcap.csv', 'text/csv');
   };
 
   const exportToJSON = () => {
-    const exportData = prepareExportData(filteredData, ipData, isPublic);
+    const exportData = prepareExportData(filteredData, ipData, isPublic, aggregationMode);
     const json = JSON.stringify(exportData, null, 2);
     downloadFile(json, 'analiza-pcap.json', 'application/json');
   };
 
   const exportToExcel = () => {
-    const exportData = prepareExportData(filteredData, ipData, isPublic);
+    const exportData = prepareExportData(filteredData, ipData, isPublic, aggregationMode);
     const ws = XLSX.utils.json_to_sheet(exportData);
     ws['!cols'] = buildExcelColumnWidths(exportData);
     const wb = createWorkbookWithMetadata();
@@ -228,6 +293,20 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
           />
         </div>
         <div className="export-buttons">
+          <button
+            className={`btn ${aggregationMode === 'connections' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setAggregationMode('connections')}
+          >
+            Relacje
+          </button>
+          <button
+            className={`btn ${aggregationMode === 'uniqueIps' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setAggregationMode('uniqueIps')}
+          >
+            Unikalne IP
+          </button>
+        </div>
+        <div className="export-buttons">
           <button className="btn btn-secondary" onClick={exportToCSV}>
             CSV
           </button>
@@ -255,10 +334,11 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
               )}
               {!isPublic && (
                 <>
-                  <th>IP Zrodlowe</th>
-                  <th>IP Docelowe</th>
+                  <th>Adres IP</th>
+                  {aggregationMode === 'connections' ? <th>IP Docelowe</th> : <th>Komunikuje sie z</th>}
                 </>
               )}
+              {aggregationMode === 'uniqueIps' && <th>Peerzy</th>}
               <th>Usluga</th>
               <th onClick={() => handleSort('packets')}>Pakiety {getSortIndicator('packets')}</th>
               <th onClick={() => handleSort('bytes')}>Bajty {getSortIndicator('bytes')}</th>
@@ -267,8 +347,9 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
           </thead>
           <tbody>
             {filteredData.map((row, index) => {
-              const publicIp = isPublicIp(row.dst) ? row.dst : row.src;
-              const info: Partial<IpLookupData> = ipData[publicIp] ?? {};
+              const info: Partial<IpLookupData> = ipData[row.ip] ?? {};
+              const protocolBadge = row.kind === 'ip' ? row.primaryProtocol : row.protocol;
+              const publicIp = row.ip;
 
               return (
                 <tr key={index} data-public-ip={publicIp} className={highlightIp === publicIp ? 'pcap-focus-row' : undefined}>
@@ -296,19 +377,25 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
                   {!isPublic && (
                     <>
                       <td>
-                        <span className="ip-address ip-local">{row.src}</span>
+                        <span className="ip-address ip-local">{row.ip}</span>
                       </td>
                       <td>
-                        <span className="ip-address ip-local">{row.dst}</span>
+                        <span className="ip-address ip-local">{row.kind === 'connection' ? row.dst : row.peers || '-'}</span>
                       </td>
                     </>
+                  )}
+
+                  {aggregationMode === 'uniqueIps' && (
+                    <td style={{ maxWidth: 260 }}>
+                      <span title={row.kind === 'ip' ? row.peers : ''}>{row.kind === 'ip' ? row.peerCount : '-'}</span>
+                    </td>
                   )}
 
                   <td>
                     <div className="service-info">
                       <span className="service-name">{row.services || 'Nieznane'}</span>
-                      {row.dstPort && <span className="port-number">Port {row.dstPort}</span>}
-                      <span className={`protocol-badge ${row.protocol.toLowerCase()}`}>{row.protocol}</span>
+                      {row.servicePorts !== 'N/D' && <span className="port-number">Port {row.servicePorts}</span>}
+                      <span className={`protocol-badge ${protocolBadge.toLowerCase()}`}>{row.protocol}</span>
                     </div>
                   </td>
 
@@ -319,7 +406,12 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
 
                   {isPublic && (
                     <td>
-                      <SecurityAnalysis port={row.dstPort} protocol={row.protocol} isp={info.isp as string | undefined} />
+                      <SecurityAnalysis
+                        port={row.primaryServicePort}
+                        protocol={protocolBadge}
+                        serviceConfidence={row.serviceConfidence}
+                        isp={info.isp as string | undefined}
+                      />
                     </td>
                   )}
                 </tr>
@@ -335,10 +427,11 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
 interface SecurityAnalysisProps {
   port: number | null;
   protocol: string;
+  serviceConfidence: ResolvedServiceResult['confidence'];
   isp?: string;
 }
 
-function SecurityAnalysis({ port, protocol, isp }: SecurityAnalysisProps) {
+function SecurityAnalysis({ port, protocol, serviceConfidence, isp }: SecurityAnalysisProps) {
   const analysis: string[] = [];
   let level: 'safe' | 'warning' = 'safe';
 
@@ -357,6 +450,11 @@ function SecurityAnalysis({ port, protocol, isp }: SecurityAnalysisProps) {
     level = 'warning';
   }
 
+  if (serviceConfidence !== 'high') {
+    analysis.push('Usluga niejednoznaczna');
+    level = 'warning';
+  }
+
   if (isp) {
     const trusted = ['microsoft', 'google', 'amazon', 'cloudflare', 'akamai'];
     const isTrusted = trusted.some((t) => isp.toLowerCase().includes(t));
@@ -368,31 +466,6 @@ function SecurityAnalysis({ port, protocol, isp }: SecurityAnalysisProps) {
   const className = `security-info security-${level}`;
 
   return <div className={className}>{analysis.join(' / ') || 'Ruch Standardowy'}</div>;
-}
-
-function getServiceName(port: number): string {
-  const services: Record<number, string> = {
-    20: 'FTP-Data',
-    21: 'FTP',
-    22: 'SSH',
-    23: 'Telnet',
-    25: 'SMTP',
-    53: 'DNS',
-    80: 'HTTP',
-    110: 'POP3',
-    143: 'IMAP',
-    443: 'HTTPS',
-    465: 'SMTPS',
-    587: 'SMTP',
-    993: 'IMAPS',
-    995: 'POP3S',
-    3306: 'MySQL',
-    3389: 'RDP',
-    5432: 'PostgreSQL',
-    8080: 'HTTP-Alt',
-    8443: 'HTTPS-Alt'
-  };
-  return services[port] || `Port-${port}`;
 }
 
 function getFlagEmoji(countryCode: string): string {
@@ -429,6 +502,7 @@ export function aggregateConnections(connections: ParsedConnection[]): Aggregate
 
   connections.forEach((conn) => {
     const key = `${conn.src}-${conn.dst}`;
+    const serviceResolution = resolveConnectionServices(conn);
     if (!grouped[key]) {
       grouped[key] = {
         src: conn.src,
@@ -438,18 +512,44 @@ export function aggregateConnections(connections: ParsedConnection[]): Aggregate
         dstPort: conn.dstPort,
         packetCount: 0,
         bytes: 0,
-        services: new Set<string>()
+        serviceLabels: new Set<string>(),
+        servicePorts: new Set<string>(),
+        serviceRfcs: new Set<string>(),
+        serviceConfidence: serviceResolution.confidence,
+        serviceResolution,
+        primaryServicePort: serviceResolution.primaryCandidate?.port ?? null
       };
     }
 
     grouped[key].packetCount += conn.packetCount || 1;
     grouped[key].bytes += conn.length || 0;
-    if (conn.dstPort) {
-      grouped[key].services.add(getServiceName(conn.dstPort));
+
+    const group = grouped[key];
+    group.serviceConfidence = mergeConfidence(group.serviceConfidence, serviceResolution.confidence);
+
+    const serviceLabel = formatResolvedServiceNameWithFallback(serviceResolution, conn.srcPort, conn.dstPort);
+    const servicePort = formatResolvedServicePort(serviceResolution, conn.srcPort, conn.dstPort);
+    const serviceRfc = formatResolvedServiceRfc(serviceResolution);
+
+    if (serviceLabel !== 'Niezidentyfikowana') {
+      group.serviceLabels.add(serviceLabel);
+    }
+    if (servicePort !== 'N/D') {
+      group.servicePorts.add(servicePort);
+    }
+    if (serviceRfc !== 'N/D') {
+      group.serviceRfcs.add(serviceRfc);
+    }
+
+    if (!group.serviceResolution.primaryCandidate && serviceResolution.primaryCandidate) {
+      group.serviceResolution = serviceResolution;
+      group.primaryServicePort = serviceResolution.primaryCandidate.port;
     }
   });
 
   return Object.values(grouped).map((group) => ({
+    kind: 'connection',
+    ip: isPublicIp(group.dst) ? group.dst : group.src,
     src: group.src,
     dst: group.dst,
     protocol: group.protocol,
@@ -457,17 +557,133 @@ export function aggregateConnections(connections: ParsedConnection[]): Aggregate
     dstPort: group.dstPort,
     packetCount: group.packetCount,
     bytes: group.bytes,
-    services: Array.from(group.services).join(', ')
+    services: Array.from(group.serviceLabels).join(', ') || 'Niezidentyfikowana',
+    servicePorts: Array.from(group.servicePorts).join(', ') || 'N/D',
+    serviceConfidence: group.serviceConfidence,
+    serviceRfc: Array.from(group.serviceRfcs).join(', ') || 'N/D',
+    serviceResolution: group.serviceResolution,
+    primaryServicePort: group.primaryServicePort
   }));
 }
 
+export function aggregateConnectionsByIp(connections: ParsedConnection[], isPublicView: boolean): AggregatedIpRow[] {
+  const grouped: Record<string, GroupedIpRow> = {};
+
+  connections.forEach((conn) => {
+    const targets = collectTargetIps(conn, isPublicView);
+    if (!targets.length) return;
+
+    const serviceResolution = resolveConnectionServices(conn);
+
+    for (const ip of targets) {
+      const peers = collectPeerIps(conn, ip);
+      const portBuckets = buildIpPortBuckets(conn, ip, peers, serviceResolution);
+
+      for (const portBucket of portBuckets) {
+        const key = portBucket.key;
+
+        if (!grouped[key]) {
+          grouped[key] = {
+            ip,
+            peers: new Set<string>(),
+            protocolCounts: {},
+            packetCount: 0,
+            bytes: 0,
+            serviceLabels: new Set<string>(),
+            servicePorts: new Set<string>(),
+            serviceRfcs: new Set<string>(),
+            serviceConfidence: portBucket.serviceConfidence,
+            serviceResolution: portBucket.serviceResolution,
+            primaryServicePort: portBucket.primaryServicePort
+          };
+        }
+
+        const group = grouped[key];
+        group.packetCount += conn.packetCount || 1;
+        group.bytes += conn.length || 0;
+        group.protocolCounts[conn.protocol] = (group.protocolCounts[conn.protocol] || 0) + (conn.packetCount || 1);
+        group.serviceConfidence = mergeConfidence(group.serviceConfidence, portBucket.serviceConfidence);
+        for (const peer of peers) {
+          group.peers.add(peer);
+        }
+        if (portBucket.serviceLabel !== 'N/D') {
+          group.serviceLabels.add(portBucket.serviceLabel);
+        }
+        if (portBucket.servicePort !== 'N/D') {
+          group.servicePorts.add(portBucket.servicePort);
+        }
+        if (portBucket.serviceRfc !== 'N/D') {
+          group.serviceRfcs.add(portBucket.serviceRfc);
+        }
+        if (!group.serviceResolution.primaryCandidate && portBucket.serviceResolution.primaryCandidate) {
+          group.serviceResolution = portBucket.serviceResolution;
+          group.primaryServicePort = portBucket.primaryServicePort;
+        }
+      }
+    }
+  });
+
+  return Object.values(grouped)
+    .map((group) => {
+      const protocols = Object.entries(group.protocolCounts)
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+        .map(([protocol]) => protocol);
+
+      return {
+        kind: 'ip',
+        ip: group.ip,
+        peers: Array.from(group.peers).sort().join(', '),
+        peerCount: group.peers.size,
+        protocol: protocols.join(', ') || 'N/D',
+        primaryProtocol: protocols[0] || 'other',
+        packetCount: group.packetCount,
+        bytes: group.bytes,
+        services: Array.from(group.serviceLabels).join(', ') || 'Niezidentyfikowana',
+        servicePorts: Array.from(group.servicePorts).join(', ') || 'N/D',
+        serviceConfidence: group.serviceConfidence,
+        serviceRfc: Array.from(group.serviceRfcs).join(', ') || 'N/D',
+        serviceResolution: group.serviceResolution,
+        primaryServicePort: group.primaryServicePort
+      } satisfies AggregatedIpRow;
+    })
+    .sort((left, right) => right.packetCount - left.packetCount || left.ip.localeCompare(right.ip));
+}
+
 export function prepareExportData(
-  data: AggregatedRow[],
+  data: TableRow[],
   ipData: Record<string, IpLookupData>,
-  _isPublic: boolean
+  _isPublic: boolean,
+  aggregationMode: AggregationMode = 'connections'
 ): ExportRow[] {
+  if (aggregationMode === 'uniqueIps') {
+    return data.map((row) => {
+      const info: Partial<IpLookupData> = ipData[row.ip] ?? {};
+      const ipRow = row as AggregatedIpRow;
+
+      return {
+        'Adres IP': ipRow.ip,
+        ASN: (info.asn as string) || 'N/D',
+        'ISP/Organizacja': (info.isp as string) || (info.org as string) || 'Nieznane',
+        Kraj: (info.country as string) || 'Nieznane',
+        Miasto: (info.city as string) || 'N/D',
+        'Blok CIDR': (info.cidr as string) || (info.range as string) || 'N/D',
+        Usluga: ipRow.services || 'Nieznane',
+        Port: ipRow.servicePorts,
+        'Port uslugi': ipRow.servicePorts,
+        Pewnosc: ipRow.serviceConfidence,
+        RFC: ipRow.serviceRfc,
+        Protokol: ipRow.protocol,
+        Pakiety: ipRow.packetCount,
+        Bajty: ipRow.bytes,
+        'Komunikuje sie z': ipRow.peers || '-',
+        'Liczba peerow': ipRow.peerCount
+      };
+    });
+  }
+
   return data.map((row) => {
-    const publicIp = isPublicIp(row.dst) ? row.dst : row.src;
+    const relationRow = row as AggregatedRow;
+    const publicIp = relationRow.ip;
     const info: Partial<IpLookupData> = ipData[publicIp] ?? {};
 
     return {
@@ -477,13 +693,123 @@ export function prepareExportData(
       Kraj: (info.country as string) || 'Nieznane',
       Miasto: (info.city as string) || 'N/D',
       'Blok CIDR': (info.cidr as string) || (info.range as string) || 'N/D',
-      Usluga: row.services || 'Nieznane',
-      Port: row.dstPort || 'N/D',
-      Protokol: row.protocol,
-      Pakiety: row.packetCount,
-      Bajty: row.bytes,
-      'IP Zrodlowe': row.src,
-      'IP Docelowe': row.dst
+      Usluga: relationRow.services || 'Nieznane',
+      Port: relationRow.dstPort || 'N/D',
+      'Port uslugi': relationRow.servicePorts,
+      Pewnosc: relationRow.serviceConfidence,
+      RFC: relationRow.serviceRfc,
+      Protokol: relationRow.protocol,
+      Pakiety: relationRow.packetCount,
+      Bajty: relationRow.bytes,
+      'IP Zrodlowe': relationRow.src,
+      'IP Docelowe': relationRow.dst
+    };
+  });
+}
+
+function mergeConfidence(
+  current: ResolvedServiceResult['confidence'],
+  next: ResolvedServiceResult['confidence']
+): ResolvedServiceResult['confidence'] {
+  const order: Record<ResolvedServiceResult['confidence'], number> = {
+    low: 0,
+    medium: 1,
+    high: 2
+  };
+
+  return order[next] > order[current] ? next : current;
+}
+
+function collectTargetIps(conn: ParsedConnection, isPublicView: boolean): string[] {
+  const candidates = [conn.src, conn.dst].filter(Boolean);
+  return Array.from(
+    new Set(candidates.filter((ip) => (isPublicView ? isPublicIp(ip) : !isPublicIp(ip))))
+  );
+}
+
+function collectPeerIps(conn: ParsedConnection, targetIp: string): string[] {
+  const peers: string[] = [];
+  if (conn.src === targetIp && conn.dst) {
+    peers.push(conn.dst);
+  }
+  if (conn.dst === targetIp && conn.src) {
+    peers.push(conn.src);
+  }
+  return Array.from(new Set(peers.filter(Boolean)));
+}
+
+function buildIpPortBuckets(
+  conn: ParsedConnection,
+  targetIp: string,
+  peers: string[],
+  serviceResolution: ResolvedServiceResult
+): Array<{
+  key: string;
+  serviceLabel: string;
+  servicePort: string;
+  serviceRfc: string;
+  serviceConfidence: ResolvedServiceResult['confidence'];
+  serviceResolution: ResolvedServiceResult;
+  primaryServicePort: number | null;
+}> {
+  const peerKey = peers.length ? peers.slice().sort().join('|') : '-';
+  const relationKey = `${conn.src}|${conn.srcPort ?? '-'}|${conn.dst}|${conn.dstPort ?? '-'}|${conn.protocol}`;
+  const observedPorts = Array.from(
+    new Set([conn.srcPort, conn.dstPort].filter((value): value is number => Number.isInteger(value) && value > 0))
+  );
+
+  if (!observedPorts.length) {
+    return [
+      {
+        key: `${targetIp}|${peerKey}|${relationKey}|N/D`,
+        serviceLabel: 'N/D',
+        servicePort: 'N/D',
+        serviceRfc: 'N/D',
+        serviceConfidence: 'low',
+        serviceResolution: {
+          candidates: [],
+          primaryCandidate: null,
+          confidence: 'low',
+          reason: 'target-port-unidentified'
+        },
+        primaryServicePort: null
+      }
+    ];
+  }
+
+  return observedPorts.map((port) => {
+    const candidate = serviceResolution.candidates.find((item) => item.port === port) ?? null;
+    if (candidate) {
+      return {
+        key: `${targetIp}|${peerKey}|${relationKey}|${candidate.port}`,
+        serviceLabel: candidate.displayName,
+        servicePort: String(candidate.port),
+        serviceRfc: candidate.rfcRefs.length ? candidate.rfcRefs.join(', ') : 'N/D',
+        serviceConfidence: serviceResolution.confidence,
+        serviceResolution: {
+          candidates: [candidate],
+          primaryCandidate: candidate,
+          confidence: serviceResolution.confidence,
+          reason: serviceResolution.reason
+        },
+        primaryServicePort: candidate.port
+      };
+    }
+
+    const fallbackPort = String(port);
+    return {
+      key: `${targetIp}|${peerKey}|${relationKey}|${fallbackPort}`,
+      serviceLabel: fallbackPort,
+      servicePort: fallbackPort,
+      serviceRfc: 'N/D',
+      serviceConfidence: 'low',
+      serviceResolution: {
+        candidates: [],
+        primaryCandidate: null,
+        confidence: 'low',
+        reason: 'target-port-unidentified'
+      },
+      primaryServicePort: port
     };
   });
 }

@@ -20,6 +20,30 @@ export interface ParsedConnection {
   type?: string;
 }
 
+export type ServiceResolutionConfidence = 'high' | 'medium' | 'low';
+
+export interface ServiceCatalogEntry {
+  protocol: 'TCP' | 'UDP';
+  port: number;
+  serviceName: string;
+  displayName: string;
+  rfcRefs: string[];
+  source: 'IANA';
+  aliases?: string[];
+}
+
+export interface ResolvedServiceCandidate extends ServiceCatalogEntry {
+  matchedOn: 'src' | 'dst';
+  isEphemeral: boolean;
+}
+
+export interface ResolvedServiceResult {
+  candidates: ResolvedServiceCandidate[];
+  primaryCandidate: ResolvedServiceCandidate | null;
+  confidence: ServiceResolutionConfidence;
+  reason: string;
+}
+
 export interface IpLookupData {
   ip: string;
   asn: string | null;

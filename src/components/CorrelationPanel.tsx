@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { summarizeCorrelation } from '../utils/correlationSummary';
 import { createWorkbookWithMetadata } from '../utils/excelWorkbook';
+import { formatResolvedServiceName, formatResolvedServiceNameWithFallback, resolveServiceFromPorts } from '../utils/serviceResolver';
 import type {
     CorrelationJobStatus,
     CorrelationMatch,
@@ -853,23 +854,22 @@ function formatBytes(bytes: number): string {
 }
 
 function serviceLabel(match: CorrelationMatch): string {
-    if (typeof match.dstPort === 'number') {
-        if (match.dstPort === 80) return 'HTTP';
-        if (match.dstPort === 443) return 'HTTPS';
-        if (match.dstPort === 53) return 'DNS';
-        if (match.dstPort === 22) return 'SSH';
-        return `Port ${match.dstPort}`;
-    }
-    return '-';
+    const protocol = match.protocol.trim().toUpperCase();
+    if (protocol !== 'TCP' && protocol !== 'UDP') return '-';
+    return formatResolvedServiceNameWithFallback(resolveServiceFromPorts(protocol, match.srcPort, match.dstPort), match.srcPort, match.dstPort);
 }
 
 function serviceLabelByPort(port: number | null): string {
     if (typeof port !== 'number') return '-';
-    if (port === 80) return 'HTTP';
-    if (port === 443) return 'HTTPS';
-    if (port === 53) return 'DNS';
-    if (port === 22) return 'SSH';
-    return `Port ${port}`;
+    const tcpResult = resolveServiceFromPorts('TCP', null, port);
+    const tcpLabel = formatResolvedServiceName(tcpResult);
+    if (tcpLabel !== 'Niezidentyfikowana') return tcpLabel;
+
+    const udpResult = resolveServiceFromPorts('UDP', null, port);
+    const udpLabel = formatResolvedServiceName(udpResult);
+    if (udpLabel !== 'Niezidentyfikowana') return udpLabel;
+
+    return formatResolvedServiceNameWithFallback(tcpResult, null, port);
 }
 
 function formatReasons(match: CorrelationMatch): string {
