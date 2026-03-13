@@ -1,6 +1,6 @@
 {
   "name": "pcap-analyzer",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Aplikacja do analizy plikow PCAP z Wiresharka",
   "main": "dist/main.js",
   "scripts": {
