@@ -13,8 +13,9 @@
     "test": "bun test",
     "test:captures": "bun test tests/captures-table-data.test.ts",
     "runtime:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/prepare_release_runtime.ps1",
-    "dist": "bun run build && electron-builder --win nsis --publish never",
-    "dist:internal": "bun run build && electron-builder --win nsis --publish never --config electron-builder.internal.cjs",
+    "release:verify-runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/verify_release_bundle.ps1",
+    "dist": "bun run runtime:prepare && bun run build && electron-builder --win nsis --publish never && bun run release:verify-runtime",
+    "dist:internal": "bun run runtime:prepare && bun run build && electron-builder --win nsis --publish never --config electron-builder.internal.cjs && bun run release:verify-runtime -ReleaseRoot ./release/internal",
     "sidecar:install-deps": "python -m pip install -r sidecar/requirements.txt"
   },
   "dependencies": {

@@ -53,10 +53,10 @@ bun run build
 bun run dist
 ```
 
-The installer is written to `release/`.
+The command prepares the bundled correlation runtime first, then writes the installer to `release/`.
 This is the same installer variant intended for GitHub Releases.
 End users do not need a system-wide Python installation.
-The release pipeline prepares and bundles the correlation runtime in advance: embedded Python, `pip` packages from `sidecar/requirements.txt`, and the bundled Sysinternals Process Monitor binary.
+The release pipeline uses the same path and verifies the bundled correlation runtime before publishing: embedded Python, `pip` packages from `sidecar/requirements.txt`, and the bundled Sysinternals Process Monitor binaries.
 During installation the bootstrap script mainly verifies that runtime and only falls back to downloading missing pieces if the bundled copy is incomplete.
 
 ### Internal package (auto dependencies on install)
@@ -66,6 +66,7 @@ bun run dist:internal
 ```
 
 This build creates a non-public installer in `release/internal/`.
+It also prepares and verifies the bundled runtime before packaging.
 During installation, the installer bootstraps embedded Python and installs sidecar dependencies automatically (no manual `pip install` on end-user machines).
 
 ## GitHub Releases

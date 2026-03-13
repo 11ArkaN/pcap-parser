@@ -104,6 +104,32 @@ function Test-ProcmonExecutable {
   return $true
 }
 
+function Test-ProcmonBundleComplete {
+  param([string]$ProcmonDir)
+
+  $procmon64 = Join-Path $ProcmonDir "Procmon64.exe"
+  $procmon32 = Join-Path $ProcmonDir "Procmon.exe"
+  $eulaPath = Join-Path $ProcmonDir "Eula.txt"
+
+  $has64 = Test-ProcmonExecutable -ExecutablePath $procmon64
+  $has32 = Test-ProcmonExecutable -ExecutablePath $procmon32
+  $hasEula = Test-Path $eulaPath
+
+  if (-not $has64) {
+    Write-Step "Brak poprawnego Procmon64.exe, wymagana naprawa."
+  }
+
+  if (-not $has32) {
+    Write-Step "Brak poprawnego Procmon.exe, wymagana naprawa."
+  }
+
+  if (-not $hasEula) {
+    Write-Step "Brak Eula.txt dla Procmon, wymagana naprawa."
+  }
+
+  return $has64 -and $has32 -and $hasEula
+}
+
 function Ensure-ProcmonBinary {
   param([string]$ProcmonDir)
 
@@ -111,8 +137,8 @@ function Ensure-ProcmonBinary {
   $procmon64 = Join-Path $ProcmonDir "Procmon64.exe"
   $procmon32 = Join-Path $ProcmonDir "Procmon.exe"
 
-  if ((Test-ProcmonExecutable -ExecutablePath $procmon64) -or (Test-ProcmonExecutable -ExecutablePath $procmon32)) {
-    Write-Step "Procmon binary juz istnieje."
+  if (Test-ProcmonBundleComplete -ProcmonDir $ProcmonDir) {
+    Write-Step "Procmon bundle juz kompletny."
     return
   }
 
@@ -134,8 +160,8 @@ function Ensure-ProcmonBinary {
     if (Test-Path $tempExtractDir) { Remove-Item $tempExtractDir -Recurse -Force -ErrorAction SilentlyContinue }
   }
 
-  if (-not (Test-ProcmonExecutable -ExecutablePath $procmon64) -and -not (Test-ProcmonExecutable -ExecutablePath $procmon32)) {
-    throw "Nie udalo sie zainstalowac Procmon (brak Procmon64.exe i Procmon.exe)."
+  if (-not (Test-ProcmonBundleComplete -ProcmonDir $ProcmonDir)) {
+    throw "Nie udalo sie zainstalowac kompletnego bundla Procmon."
   }
 }
 

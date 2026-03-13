@@ -172,13 +172,39 @@ function Test-ProcmonExecutable {
   }
 }
 
+function Test-ProcmonBundleComplete {
+  param([string]$ProcmonDir)
+
+  $procmon64 = Join-Path $ProcmonDir "Procmon64.exe"
+  $procmon32 = Join-Path $ProcmonDir "Procmon.exe"
+  $eulaPath = Join-Path $ProcmonDir "Eula.txt"
+
+  $has64 = Test-ProcmonExecutable -ExecutablePath $procmon64
+  $has32 = Test-ProcmonExecutable -ExecutablePath $procmon32
+  $hasEula = Test-Path $eulaPath
+
+  if (-not $has64) {
+    Write-Step "Brak poprawnego Procmon64.exe w bundlu, wymagana naprawa."
+  }
+
+  if (-not $has32) {
+    Write-Step "Brak poprawnego Procmon.exe w bundlu, wymagana naprawa."
+  }
+
+  if (-not $hasEula) {
+    Write-Step "Brak Eula.txt w bundlu Procmon, wymagana naprawa."
+  }
+
+  return $has64 -and $has32 -and $hasEula
+}
+
 function Ensure-ProcmonBinary {
   New-Item -ItemType Directory -Path $procmonDir -Force | Out-Null
   $procmon64 = Join-Path $procmonDir "Procmon64.exe"
   $procmon32 = Join-Path $procmonDir "Procmon.exe"
 
-  if ((Test-ProcmonExecutable -ExecutablePath $procmon64) -or (Test-ProcmonExecutable -ExecutablePath $procmon32)) {
-    Write-Step "Procmon binary juz istnieje."
+  if (Test-ProcmonBundleComplete -ProcmonDir $procmonDir) {
+    Write-Step "Procmon bundle juz kompletny."
     return
   }
 
@@ -187,6 +213,9 @@ function Ensure-ProcmonBinary {
   $tempExtractDir = Join-Path $env:TEMP ("pcap-analyzer-procmon-{0}" -f ([Guid]::NewGuid().ToString("N")))
 
   try {
+    if (Test-Path $procmon64) { Remove-Item $procmon64 -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $procmon32) { Remove-Item $procmon32 -Force -ErrorAction SilentlyContinue }
+    if (Test-Path (Join-Path $procmonDir "Eula.txt")) { Remove-Item (Join-Path $procmonDir "Eula.txt") -Force -ErrorAction SilentlyContinue }
     Download-File -Url $procmonZipUrl -Destination $tempZip
     Expand-Archive -Path $tempZip -DestinationPath $tempExtractDir -Force
     Copy-Item -Path (Join-Path $tempExtractDir "Procmon64.exe") -Destination $procmon64 -Force -ErrorAction SilentlyContinue
@@ -198,8 +227,8 @@ function Ensure-ProcmonBinary {
     if (Test-Path $tempExtractDir) { Remove-Item $tempExtractDir -Recurse -Force -ErrorAction SilentlyContinue }
   }
 
-  if (-not (Test-ProcmonExecutable -ExecutablePath $procmon64) -and -not (Test-ProcmonExecutable -ExecutablePath $procmon32)) {
-    throw "Nie udalo sie przygotowac Procmon do bundla."
+  if (-not (Test-ProcmonBundleComplete -ProcmonDir $procmonDir)) {
+    throw "Nie udalo sie przygotowac kompletnego bundla Procmon."
   }
 }
 
