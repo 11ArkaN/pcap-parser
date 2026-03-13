@@ -20,10 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Fetch tags
-        if: github.event_name == 'workflow_dispatch'
-        run: git fetch --tags
+        with:
+          fetch-depth: 0
 
       - name: Validate tag input
         if: github.event_name == 'workflow_dispatch'
@@ -39,8 +37,11 @@ jobs:
             exit 1
           fi
           if ! git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Error: tag '$TAG' does not exist in the repository"
-            exit 1
+            echo "Tag '$TAG' does not exist -- creating it on HEAD"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG" || { echo "Error: failed to create tag '$TAG'"; exit 1; }
+            git push origin "$TAG" || { echo "Error: failed to push tag '$TAG'"; exit 1; }
           fi
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
 
