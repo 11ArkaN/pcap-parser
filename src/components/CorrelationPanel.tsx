@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { summarizeCorrelation } from '../utils/correlationSummary';
+import { createWorkbookWithMetadata } from '../utils/excelWorkbook';
 import type {
     CorrelationJobStatus,
     CorrelationMatch,
@@ -107,7 +108,7 @@ function CorrelationPanel({
 
     const exportToExcel = () => {
         if (!correlationResult) return;
-        const workbook = XLSX.utils.book_new();
+        const workbook = createWorkbookWithMetadata();
 
         const summaryRows = prepareSummaryExportRows(correlationResult, ipData);
         appendExcelSheet(workbook, 'Podsumowanie', summaryRows);

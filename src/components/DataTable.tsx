@@ -2,6 +2,7 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import type { IpLookupData, ParsedConnection } from '../types';
+import { createWorkbookWithMetadata } from '../utils/excelWorkbook';
 
 const SearchIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -197,7 +198,7 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
     const exportData = prepareExportData(filteredData, ipData, isPublic);
     const ws = XLSX.utils.json_to_sheet(exportData);
     ws['!cols'] = buildExcelColumnWidths(exportData);
-    const wb = XLSX.utils.book_new();
+    const wb = createWorkbookWithMetadata();
     XLSX.utils.book_append_sheet(wb, ws, 'Analiza PCAP');
     XLSX.writeFile(wb, 'analiza-pcap.xlsx');
   };
@@ -518,4 +519,3 @@ function downloadFile(content: string, filename: string, type: string) {
 }
 
 export default DataTable;
-
