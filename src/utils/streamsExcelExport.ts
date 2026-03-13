@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { PcapStreamSummary, StreamPacketMeta } from '../types';
-import { createWorkbookWithMetadata } from './excelWorkbook';
+import { appendHostNetworkSheet, createWorkbookWithMetadata } from './excelWorkbook';
 
 interface StreamsExcelExportPayload {
   fileName: string;
@@ -17,8 +17,9 @@ interface StreamsExcelExportPayload {
 const MAX_PACKET_ROWS_IN_EXPORT = 200_000;
 const MAX_ALL_PACKET_ROWS_IN_EXPORT = 500_000;
 
-export function exportStreamsToExcel(payload: StreamsExcelExportPayload): void {
+export async function exportStreamsToExcel(payload: StreamsExcelExportPayload): Promise<void> {
   const workbook = createWorkbookWithMetadata();
+  await appendHostNetworkSheet(workbook);
   const selectedStream = payload.selectedStreamId
     ? payload.filteredStreams.find((stream) => stream.streamId === payload.selectedStreamId) ?? null
     : null;

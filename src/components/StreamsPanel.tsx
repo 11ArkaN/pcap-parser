@@ -86,7 +86,7 @@ function StreamsPanel({
     setExcelExportError(null);
     setIsExcelExporting(true);
     try {
-      exportStreamsToExcel({
+      await exportStreamsToExcel({
         fileName: extractFileName(filePath),
         generatedAt: new Date(),
         searchQuery: search,

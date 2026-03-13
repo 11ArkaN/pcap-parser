@@ -2,6 +2,7 @@ import type {
   CorrelationJobStatus,
   CorrelationReportV1,
   CorrelationRequest,
+  HostNetworkInfo,
   IpLookupData,
   PcapStreamCatalog,
   ParsedConnection,
@@ -111,6 +112,16 @@ type CorrelationCancelResult = {
   error?: string;
 };
 
+type HostNetworkInfoResult =
+  | {
+    success: true;
+    data: HostNetworkInfo;
+  }
+  | {
+    success: false;
+    error: string;
+  };
+
 declare global {
   interface Window {
     electronAPI: {
@@ -121,6 +132,7 @@ declare global {
       parseStreamCatalog: (filePath: string, maxPackets?: number) => Promise<ParseStreamCatalogResult>;
       getStreamPacketPayload: (payload: { filePath: string; payloadRef: StreamPayloadRef; maxBytes?: number }) => Promise<StreamPayloadResult>;
       lookupIp: (ip: string) => Promise<LookupIpResult>;
+      getHostNetworkInfo: () => Promise<HostNetworkInfoResult>;
       startCorrelation: (payload: CorrelationRequest) => Promise<CorrelationStartResult>;
       getCorrelationStatus: (jobId: string) => Promise<CorrelationStatusResult>;
       cancelCorrelation: (jobId: string) => Promise<CorrelationCancelResult>;

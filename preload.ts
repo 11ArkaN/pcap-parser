@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getStreamPacketPayload: (payload: { filePath: string; payloadRef: unknown; maxBytes?: number }) =>
     ipcRenderer.invoke('get-stream-packet-payload', payload),
   lookupIp: (ip: string) => ipcRenderer.invoke('lookup-ip', ip),
+  getHostNetworkInfo: () => ipcRenderer.invoke('get-host-network-info'),
   startCorrelation: (payload: unknown) => ipcRenderer.invoke('start-correlation', payload),
   getCorrelationStatus: (jobId: string) => ipcRenderer.invoke('get-correlation-status', jobId),
   cancelCorrelation: (jobId: string) => ipcRenderer.invoke('cancel-correlation', jobId),

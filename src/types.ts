@@ -63,6 +63,34 @@ export interface IpLookupData {
   [key: string]: unknown;
 }
 
+export interface HostNetworkAdapterInfo {
+  name: string;
+  description: string | null;
+  macAddress: string | null;
+  ipv4: string[];
+  ipv6: string[];
+  dnsServers: string[];
+  defaultGateway: string | null;
+  gatewayMacAddress: string | null;
+}
+
+export interface HostNetworkInfo {
+  collectedAt: string;
+  hostName: string;
+  osName: string | null;
+  osPlatform: string;
+  osRelease: string;
+  activeAdapter: HostNetworkAdapterInfo | null;
+  adapters: HostNetworkAdapterInfo[];
+  localIpv4: string[];
+  localIpv6: string[];
+  dnsServers: string[];
+  defaultGateway: string | null;
+  gatewayMacAddress: string | null;
+  publicIp: string | null;
+  natStatus: 'behind_nat' | 'public_ip' | 'unknown';
+}
+
 export interface LoadingProgress {
   current: number;
   total: number;

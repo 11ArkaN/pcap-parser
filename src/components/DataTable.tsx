@@ -2,7 +2,7 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import type { IpLookupData, ParsedConnection, ResolvedServiceResult } from '../types';
-import { createWorkbookWithMetadata } from '../utils/excelWorkbook';
+import { appendHostNetworkSheet, createWorkbookWithMetadata } from '../utils/excelWorkbook';
 import {
   formatResolvedServiceNameWithFallback,
   formatResolvedServicePort,
@@ -259,11 +259,12 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
     downloadFile(json, 'analiza-pcap.json', 'application/json');
   };
 
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
     const exportData = prepareExportData(filteredData, ipData, isPublic, aggregationMode);
     const ws = XLSX.utils.json_to_sheet(exportData);
     ws['!cols'] = buildExcelColumnWidths(exportData);
     const wb = createWorkbookWithMetadata();
+    await appendHostNetworkSheet(wb);
     XLSX.utils.book_append_sheet(wb, ws, 'Analiza PCAP');
     XLSX.writeFile(wb, 'analiza-pcap.xlsx');
   };
@@ -313,7 +314,7 @@ function DataTable({ connections, ipData, isPublic, focusRequest = null }: DataT
           <button className="btn btn-secondary" onClick={exportToJSON}>
             JSON
           </button>
-          <button className="btn btn-primary" onClick={exportToExcel}>
+          <button className="btn btn-primary" onClick={() => void exportToExcel()}>
             Excel
           </button>
         </div>

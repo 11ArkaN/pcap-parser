@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { summarizeCorrelation } from '../utils/correlationSummary';
-import { createWorkbookWithMetadata } from '../utils/excelWorkbook';
+import { appendHostNetworkSheet, createWorkbookWithMetadata } from '../utils/excelWorkbook';
 import { formatResolvedServiceName, formatResolvedServiceNameWithFallback, resolveServiceFromPorts } from '../utils/serviceResolver';
 import type {
     CorrelationJobStatus,
@@ -107,9 +107,10 @@ function CorrelationPanel({
         setExpandedRows((current) => ({ ...current, [rowKey]: !current[rowKey] }));
     };
 
-    const exportToExcel = () => {
+    const exportToExcel = async () => {
         if (!correlationResult) return;
         const workbook = createWorkbookWithMetadata();
+        await appendHostNetworkSheet(workbook);
 
         const summaryRows = prepareSummaryExportRows(correlationResult, ipData);
         appendExcelSheet(workbook, 'Podsumowanie', summaryRows);
@@ -243,7 +244,7 @@ function CorrelationPanel({
                                     </span>
                                 </div>
                                 <div className="export-buttons">
-                                    <button className="btn btn-primary" onClick={exportToExcel} disabled={!canExportExcel}>
+                                    <button className="btn btn-primary" onClick={() => void exportToExcel()} disabled={!canExportExcel}>
                                         Excel
                                     </button>
                                 </div>
