@@ -48,6 +48,14 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Align package version to release tag
+        shell: bash
+        run: |
+          TAG="${RELEASE_TAG:-${GITHUB_REF_NAME}}"
+          VERSION="${TAG#v}"
+          echo "Building release for $TAG with package version $VERSION"
+          VERSION="$VERSION" node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path, 'utf8')); pkg.version=process.env.VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
