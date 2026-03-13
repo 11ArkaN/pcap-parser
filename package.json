@@ -1,6 +1,6 @@
 {
   "name": "pcap-analyzer",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Aplikacja do analizy plikow PCAP z Wiresharka",
   "main": "dist/main.js",
   "scripts": {
@@ -13,8 +13,8 @@
     "test": "bun test",
     "test:captures": "bun test tests/captures-table-data.test.ts",
     "runtime:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/prepare_release_runtime.ps1",
-    "dist": "bun run build && electron-builder --win nsis",
-    "dist:internal": "bun run build && electron-builder --win nsis --config electron-builder.internal.cjs",
+    "dist": "bun run build && electron-builder --win nsis --publish never",
+    "dist:internal": "bun run build && electron-builder --win nsis --publish never --config electron-builder.internal.cjs",
     "sidecar:install-deps": "python -m pip install -r sidecar/requirements.txt"
   },
   "dependencies": {
